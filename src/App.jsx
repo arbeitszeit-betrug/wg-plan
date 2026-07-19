@@ -898,7 +898,7 @@ export default function WGPlan() {
                       <span style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
                         {a.room}
                       </span>
-                      {isAdmin ? doneToggleBtn(done, () => toggleCleaningDone(weekKey, i, done)) : (done && <CheckCircle2 size={20} color="#5A7A5C" />)}
+                      {doneToggleBtn(done, () => toggleCleaningDone(weekKey, i, done))}
                     </div>
                   </div>
                 );
@@ -1010,7 +1010,7 @@ export default function WGPlan() {
                       <span style={{ background: "#C68B2C", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
                         {a.person}
                       </span>
-                      {isAdmin ? doneToggleBtn(done, () => toggleSupplyDone(monthKey, i, done)) : (done && <CheckCircle2 size={20} color="#5A7A5C" />)}
+                      {doneToggleBtn(done, () => toggleSupplyDone(monthKey, i, done))}
                     </div>
                   </div>
                 );

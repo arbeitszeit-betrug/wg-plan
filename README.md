@@ -3,9 +3,9 @@
 Wochenputz- und Einkaufs-Rotationsplan für die WG. React + Vite, gehostet auf GitHub Pages,
 geteilter Speicher über Firebase Realtime Database (Live-Sync zwischen allen Mitbewohner).
 
-Nur der Admin-Account (E-Mail/Passwort-Login über das Schloss-Symbol) kann Personen, Räume,
-Gegenstände bearbeiten und Aufgaben als erledigt markieren. Mitbewohner ohne Login können
-den Plan ansehen, den Kalender exportieren und freie Vorschläge/Ideen einreichen.
+Nur der Admin-Account (E-Mail/Passwort-Login über das Schloss-Symbol) kann Personen, Räume
+und Gegenstände bearbeiten. Aufgaben als erledigt markieren können alle, auch ohne Login —
+genau wie den Plan ansehen, den Kalender exportieren und freie Vorschläge/Ideen einreichen.
 
 ## Link mit den Mitbewohner teilen
 
@@ -70,7 +70,7 @@ Für die lokale Entwicklung braucht `src/firebase.js` eine gültige Firebase-Con
        },
        "wg-plan-status": {
          ".read": true,
-         ".write": "auth != null && auth.token.email === 'hannes.kornagel98@gmail.com'"
+         ".write": true
        },
        "wg-plan-meeting": {
          "info": {
@@ -91,8 +91,8 @@ Für die lokale Entwicklung braucht `src/firebase.js` eine gültige Firebase-Con
      }
    }
    ```
-   Damit können alle lesen und neue Vorschläge einreichen, aber nur der Admin-Account
-   kann den Plan bearbeiten oder Vorschläge löschen.
+   Damit können alle lesen, Erledigt-Häkchen setzen und neue Vorschläge einreichen,
+   aber nur der Admin-Account kann Personen/Räume/Gegenstände bearbeiten oder Vorschläge löschen.
 8. Änderung committen und pushen (siehe oben) — danach ist alles live. Zum Bearbeiten
    auf das Schloss-Symbol oben rechts in der App klicken und mit der E-Mail/Passwort
    aus Schritt 6 einloggen (bleibt im Browser gespeichert, bis man sich abmeldet).
