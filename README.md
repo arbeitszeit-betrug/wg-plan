@@ -9,7 +9,7 @@ den Plan ansehen, den Kalender exportieren und freie Vorschläge/Ideen einreiche
 
 ## Link mit den Mitbewohner teilen
 
-Live-Link: `https://hanneskornagel98-dot.github.io/wg-plan/`
+Live-Link: `https://arbeitszeit-betrug.github.io/wg-plan/`
 
 Diesen Link in der WhatsApp-Gruppe anpinnen. Jeder, der ihn öffnet, sieht denselben
 Stand und Änderungen (z.B. neue Person, neuer Raum) erscheinen bei allen automatisch, ohne
@@ -34,7 +34,7 @@ Für die lokale Entwicklung braucht `src/firebase.js` eine gültige Firebase-Con
    git push
    ```
 3. Fertig — GitHub Actions baut die App automatisch neu und deployed sie auf
-   `https://hanneskornagel98-dot.github.io/wg-plan/`. Nach ca. 1–2 Minuten ist die Änderung live
+   `https://arbeitszeit-betrug.github.io/wg-plan/`. Nach ca. 1–2 Minuten ist die Änderung live
    (Fortschritt im "Actions"-Tab des Repos sichtbar).
 
 ## Firebase-Setup (einmalig)
