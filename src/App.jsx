@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { ref, onValue, set as dbSet, push, remove as dbRemove } from "firebase/database";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
@@ -11,8 +11,16 @@ const CONFIG_PATH = "wg-plan-config";
 const SUGGESTIONS_PATH = "wg-plan-suggestions";
 const STATUS_PATH = "wg-plan-status";
 const MEETING_PATH = "wg-plan-meeting";
-const DEFAULT_MEETING_INFO = { time: "18:00", place: "in der WG" };
+const DEFAULT_MEETING_INFO = { date: "", time: "18:00", place: "in der WG" };
+const WEEKDAY_FULL = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
 const HISTORY_LENGTH = 6;
+
+// Zusatzaufgaben, die nur 1x im Monat an die Person gehen, die gerade den jeweiligen Raum hat
+const MONTHLY_EXTRA_TASKS = {
+  "Küche": "Ofen putzen",
+  "Bad": "Handtücher/Lappen waschen",
+};
+const EXTRA_TASK_INTERVAL_WEEKS = 4;
 
 const MONTH_NAMES = [
   "Januar", "Februar", "März", "April", "Mai", "Juni",
@@ -76,6 +84,11 @@ function isoDate(d) {
   return `${y}-${m}-${day}`;
 }
 
+function weeksBetweenDates(fromISO, toDate) {
+  const from = new Date(fromISO + "T00:00:00");
+  return Math.round((toDate - from) / (7 * 24 * 60 * 60 * 1000));
+}
+
 function icsDate(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -87,18 +100,27 @@ function icsEscape(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
 }
 
-// events: [{ uid, startDate (Date), endDateExclusive (Date), summary, description }]
+function icsDateTime(d) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${icsDate(d)}T${hh}${mm}00`;
+}
+
+// events: either all-day { uid, startDate, endDateExclusive, summary, description }
+// or timed { uid, startDateTime, endDateTime, summary, description }
 function buildICS(events) {
   const now = new Date();
   const stamp = icsDate(now) + "T000000Z";
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//WG-Plan//DE"];
   events.forEach(ev => {
+    const dtLines = ev.startDateTime
+      ? [`DTSTART:${icsDateTime(ev.startDateTime)}`, `DTEND:${icsDateTime(ev.endDateTime)}`]
+      : [`DTSTART;VALUE=DATE:${icsDate(ev.startDate)}`, `DTEND;VALUE=DATE:${icsDate(ev.endDateExclusive)}`];
     lines.push(
       "BEGIN:VEVENT",
       `UID:${ev.uid}`,
       `DTSTAMP:${stamp}`,
-      `DTSTART;VALUE=DATE:${icsDate(ev.startDate)}`,
-      `DTEND;VALUE=DATE:${icsDate(ev.endDateExclusive)}`,
+      ...dtLines,
       `SUMMARY:${icsEscape(ev.summary)}`,
       `DESCRIPTION:${icsEscape(ev.description)}`,
       "END:VEVENT"
@@ -127,19 +149,21 @@ function todayYM() {
 }
 
 function defaultConfig() {
+  const anchor = currentWindowFriday();
   return {
     people: DEFAULT_PEOPLE,
     items: DEFAULT_ITEMS,
     startMonth: todayYM(),
     rooms: DEFAULT_ROOMS,
-    anchorFriday: currentWindowFriday(),
+    anchorFriday: anchor,
+    extraTaskAnchor: isoDate(addDays(anchor, 7)),
   };
 }
 
 const TABS = [
   { key: "cleaning", label: "Putzplan", icon: Sparkles },
   { key: "supply", label: "Einkauf", icon: Package },
-  { key: "meeting", label: "WG-Treffen", icon: Users },
+  { key: "meeting", label: "WG-Gruppe", icon: Users },
 ];
 
 export default function WGPlan() {
@@ -175,6 +199,21 @@ export default function WGPlan() {
   const [meetingNotes, setMeetingNotes] = useState({});
   const [noteText, setNoteText] = useState("");
 
+  // Spaß: Konfetti + Feier-Banner + fliehender Frosch
+  const [confetti, setConfetti] = useState([]);
+  const [celebrateCleaning, setCelebrateCleaning] = useState(false);
+  const [celebrateSupply, setCelebrateSupply] = useState(false);
+  const prevCleaningCompleteRef = useRef(null);
+  const prevSupplyCompleteRef = useRef(null);
+  const [frogPos, setFrogPos] = useState(() => ({
+    x: typeof window !== "undefined" ? window.innerWidth - 70 : 300,
+    y: typeof window !== "undefined" ? window.innerHeight - 100 : 500,
+  }));
+  const [frogScared, setFrogScared] = useState(false);
+  const [frogFlip, setFrogFlip] = useState(false);
+  const [frogSweat, setFrogSweat] = useState(false);
+  const [frogAction, setFrogAction] = useState("frog-look");
+
   // Live-Sync: hört auf Firebase und übernimmt Änderungen anderer Mitbewohner
   // sofort, ohne dass die Seite neu geladen werden muss.
   useEffect(() => {
@@ -184,13 +223,19 @@ export default function WGPlan() {
       (snapshot) => {
         const data = snapshot.val();
         if (data) {
-          setConfig({
+          const resolvedAnchorFriday = data.anchorFriday || currentWindowFriday();
+          const next = {
             people: data.people || DEFAULT_PEOPLE,
             items: data.items || DEFAULT_ITEMS,
             startMonth: data.startMonth || todayYM(),
             rooms: data.rooms || DEFAULT_ROOMS,
-            anchorFriday: data.anchorFriday || currentWindowFriday(),
-          });
+            anchorFriday: resolvedAnchorFriday,
+            extraTaskAnchor: data.extraTaskAnchor || isoDate(addDays(resolvedAnchorFriday, 7)),
+          };
+          setConfig(next);
+          if (!data.extraTaskAnchor) {
+            dbSet(configRef, next).catch(() => setSaveError(true));
+          }
         } else {
           const initial = defaultConfig();
           dbSet(configRef, initial).catch(() => setSaveError(true));
@@ -232,6 +277,7 @@ export default function WGPlan() {
     const unsubscribe = onValue(infoRef, (snapshot) => {
       const data = snapshot.val();
       setMeetingInfo({
+        date: data?.date || DEFAULT_MEETING_INFO.date,
         time: data?.time || DEFAULT_MEETING_INFO.time,
         place: data?.place || DEFAULT_MEETING_INFO.place,
       });
@@ -246,6 +292,63 @@ export default function WGPlan() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Feier-Nebeneffekte (Konfetti-Regen + Auto-Ausblenden) laufen sauber in Effects,
+  // ausgelöst durch celebrateCleaning/celebrateSupply — nicht während des Renderns selbst.
+  useEffect(() => {
+    if (!celebrateCleaning) return;
+    spawnConfettiRain();
+    const t = setTimeout(() => setCelebrateCleaning(false), 3500);
+    return () => clearTimeout(t);
+  }, [celebrateCleaning]);
+
+  useEffect(() => {
+    if (!celebrateSupply) return;
+    spawnConfettiRain();
+    const t = setTimeout(() => setCelebrateSupply(false), 3500);
+    return () => clearTimeout(t);
+  }, [celebrateSupply]);
+
+  // Frosch: wechselt von selbst zwischen Idle-Animationen, solange er nicht gerade erschrocken wegläuft
+  useEffect(() => {
+    if (frogScared) return;
+    const nextAction = () => {
+      const options = ["frog-look", "frog-dance", "frog-peek", "frog-wiggle", "frog-tilt"];
+      setFrogAction(options[Math.floor(Math.random() * options.length)]);
+    };
+    const id = setInterval(nextAction, 2600 + Math.random() * 1800);
+    return () => clearInterval(id);
+  }, [frogScared]);
+
+  // Transition-Erkennung (unvollständig -> vollständig) in echten Effects statt während des Renderns,
+  // damit kein "setState während Render"-Muster genutzt wird.
+  const safeWeekKey = config ? isoDate(addDays(config.anchorFriday, weekOffset * 7)) : null;
+  const safeDoneCleaningCount = config && safeWeekKey
+    ? config.people.filter((_, i) => status.cleaning?.[safeWeekKey]?.[i]).length
+    : 0;
+  const safePeopleLen = config ? config.people.length : 0;
+
+  useEffect(() => {
+    const complete = safePeopleLen > 0 && safeDoneCleaningCount === safePeopleLen;
+    if (weekOffset === 0 && prevCleaningCompleteRef.current !== null && !prevCleaningCompleteRef.current && complete) {
+      setCelebrateCleaning(true);
+    }
+    prevCleaningCompleteRef.current = complete;
+  }, [safeDoneCleaningCount, safePeopleLen, weekOffset]);
+
+  const safeMonthKey = config ? `${monthIndexFromStart(config.startMonth, monthOffset).y}-${String(monthIndexFromStart(config.startMonth, monthOffset).m + 1).padStart(2, "0")}` : null;
+  const safeDoneSupplyCount = config && safeMonthKey
+    ? config.items.filter((_, i) => status.supply?.[safeMonthKey]?.[i]).length
+    : 0;
+  const safeItemsLen = config ? config.items.length : 0;
+
+  useEffect(() => {
+    const complete = safeItemsLen > 0 && safeDoneSupplyCount === safeItemsLen;
+    if (monthOffset === 0 && prevSupplyCompleteRef.current !== null && !prevSupplyCompleteRef.current && complete) {
+      setCelebrateSupply(true);
+    }
+    prevSupplyCompleteRef.current = complete;
+  }, [safeDoneSupplyCount, safeItemsLen, monthOffset]);
 
   const save = async (next) => {
     setConfig(next);
@@ -292,6 +395,48 @@ export default function WGPlan() {
     dbSet(ref(db, `${STATUS_PATH}/supply/${monthKey}/${idx}`), !current);
   };
 
+  const CONFETTI_COLORS = ["#C68B2C", "#3E5C76", "#5A7A5C", "#A5453B", "#9A6B1F"];
+
+  const spawnConfettiBurst = (x, y) => {
+    const id = Date.now() + Math.random();
+    const pieces = Array.from({ length: 14 }, (_, i) => ({
+      id: `${id}-${i}`,
+      dx: (Math.random() - 0.5) * 90,
+      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      delay: Math.random() * 0.1,
+    }));
+    setConfetti(c => [...c, { id, x, y, pieces, rain: false }]);
+    setTimeout(() => setConfetti(c => c.filter(b => b.id !== id)), 1000);
+  };
+
+  const spawnConfettiRain = () => {
+    const id = Date.now() + Math.random();
+    const width = typeof window !== "undefined" ? window.innerWidth : 400;
+    const pieces = Array.from({ length: 36 }, (_, i) => ({
+      id: `${id}-${i}`,
+      x: Math.random() * width,
+      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      delay: Math.random() * 0.6,
+    }));
+    setConfetti(c => [...c, { id, pieces, rain: true }]);
+    setTimeout(() => setConfetti(c => c.filter(b => b.id !== id)), 2200);
+  };
+
+  const runFrogAway = () => {
+    setFrogScared(true);
+    setFrogSweat(true);
+    setTimeout(() => setFrogSweat(false), 650);
+    setTimeout(() => {
+      const maxX = (typeof window !== "undefined" ? window.innerWidth : 400) - 50;
+      const maxY = (typeof window !== "undefined" ? window.innerHeight : 600) - 60;
+      const newX = Math.max(10, Math.random() * maxX);
+      const newY = Math.max(10, Math.random() * maxY);
+      setFrogFlip(newX < frogPos.x);
+      setFrogPos({ x: newX, y: newY });
+      setFrogScared(false);
+    }, 220);
+  };
+
   const updateMeetingField = (field, value) => {
     const next = { ...meetingInfo, [field]: value };
     setMeetingInfo(next);
@@ -314,13 +459,19 @@ export default function WGPlan() {
 
   if (loading || !config) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F1ECE0", fontFamily: "'Work Sans', sans-serif", color: "#34404A" }}>
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center", background: "#F1ECE0", fontFamily: "'Work Sans', sans-serif", color: "#34404A" }}>
+        <style>{`
+          @keyframes float-package { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+          .floaty { animation: float-package 1.1s ease-in-out infinite; }
+          @media (prefers-reduced-motion: reduce) { .floaty { animation: none; } }
+        `}</style>
+        <Package className="floaty" size={32} color="#C68B2C" strokeWidth={2.5} />
         Lädt Plan…
       </div>
     );
   }
 
-  const { people, items, startMonth, rooms, anchorFriday } = config;
+  const { people, items, startMonth, rooms, anchorFriday, extraTaskAnchor } = config;
 
   // Supply rotation (monthly)
   const { y: supplyY, m: supplyM, label: monthLabel } = monthIndexFromStart(startMonth, monthOffset);
@@ -339,11 +490,19 @@ export default function WGPlan() {
   const doneCleaning = status.cleaning?.[weekKey] || {};
   const doneCleaningCount = people.filter((_, i) => doneCleaning[i]).length;
   const weekLabel = `${WEEKDAY_SHORT[5]} ${fmtDDMM(fridayDate)}–${WEEKDAY_SHORT[0]} ${fmtDDMMYYYY(sundayDate)}`;
+
+  const isExtraTaskWeekFor = (fd) => {
+    const diff = weeksBetweenDates(extraTaskAnchor, fd);
+    return ((diff % EXTRA_TASK_INTERVAL_WEEKS) + EXTRA_TASK_INTERVAL_WEEKS) % EXTRA_TASK_INTERVAL_WEEKS === 0;
+  };
+  const isExtraTaskWeek = isExtraTaskWeekFor(fridayDate);
   // Cleaning rotation (weekly, Fri-Sun) — people stay in fixed order, rooms rotate underneath them
   const cleaningAssignments = people.map((person, p) => {
     const n = rooms.length;
     const roomIdx = ((((p - weekOffset) % n) + n) % n);
-    return { person, room: rooms[roomIdx], roomIdx };
+    const room = rooms[roomIdx];
+    const extraTask = isExtraTaskWeek ? MONTHLY_EXTRA_TASKS[room] : undefined;
+    return { person, room, roomIdx, extraTask };
   });
 
   // Verlauf: letzte HISTORY_LENGTH Wochen/Monate, unabhängig von der aktuell angezeigten Woche/Monat
@@ -402,7 +561,7 @@ export default function WGPlan() {
   };
 
   const exportCleaningWeek = () => {
-    const desc = cleaningAssignments.map(a => `${a.person}: ${a.room}`).join("\n");
+    const desc = cleaningAssignments.map(a => `${a.person}: ${a.room}${a.extraTask ? ` (+ ${a.extraTask})` : ""}`).join("\n");
     const start = fridayDate;
     const end = addDays(anchorFriday, weekOffset * 7 + 3); // exclusive end = Monday
     downloadICS("wochenputz.ics", [{
@@ -420,16 +579,19 @@ export default function WGPlan() {
     for (let w = 0; w < weeks; w++) {
       const wStart = addDays(anchorFriday, w * 7);
       const wEnd = addDays(anchorFriday, w * 7 + 3);
+      const weekIsExtra = isExtraTaskWeekFor(wStart);
       const assigns = people.map((person, p) => {
         const roomIdx = ((((p - w) % n) + n) % n);
-        return { person, room: rooms[roomIdx] };
+        const room = rooms[roomIdx];
+        const extraTask = weekIsExtra ? MONTHLY_EXTRA_TASKS[room] : undefined;
+        return { person, room, extraTask };
       });
       events.push({
         uid: `putz-${icsDate(wStart)}@wg-plan`,
         startDate: wStart,
         endDateExclusive: wEnd,
         summary: `Wochenputz: ${assigns.map(a => `${a.person}–${a.room}`).join(", ")}`,
-        description: assigns.map(a => `${a.person}: ${a.room}`).join("\n"),
+        description: assigns.map(a => `${a.person}: ${a.room}${a.extraTask ? ` (+ ${a.extraTask})` : ""}`).join("\n"),
       });
     }
     downloadICS("wochenputz-12wochen.ics", events);
@@ -488,8 +650,34 @@ export default function WGPlan() {
   const suggestionList = Object.entries(suggestions).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
   const noteList = Object.entries(meetingNotes).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
 
+  const exportMeeting = () => {
+    if (!meetingInfo.date) return;
+    const [hh, mm] = (meetingInfo.time || "18:00").split(":").map(Number);
+    const start = new Date(meetingInfo.date + "T00:00:00");
+    start.setHours(hh || 0, mm || 0, 0, 0);
+    const end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+    const descLines = [`Ort: ${meetingInfo.place}`];
+    if (noteList.length > 0) {
+      descLines.push("", "Anmerkungen:", ...noteList.map(([, n]) => `- ${n.text}`));
+    }
+    downloadICS("wg-gruppe.ics", [{
+      uid: `meeting-${meetingInfo.date}@wg-plan`,
+      startDateTime: start,
+      endDateTime: end,
+      summary: "WG-Gruppe",
+      description: descLines.join("\n"),
+    }]);
+  };
+
   const doneToggleBtn = (done, onClick) => (
-    <button onClick={onClick} aria-label={done ? "als nicht erledigt markieren" : "als erledigt markieren"} style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "#C9BFA5", padding: 8, margin: -8, display: "flex" }}>
+    <button
+      onClick={(e) => {
+        if (!done) spawnConfettiBurst(e.clientX, e.clientY);
+        onClick();
+      }}
+      aria-label={done ? "als nicht erledigt markieren" : "als erledigt markieren"}
+      style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "#C9BFA5", padding: 8, margin: -8, display: "flex" }}
+    >
       {done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
     </button>
   );
@@ -512,7 +700,81 @@ export default function WGPlan() {
           outline-offset: 2px;
         }
         input, select { font-family: inherit; }
-        @media (prefers-reduced-motion: reduce) { .stamp-btn { transition: none; } }
+        .nav-arrow { transition: transform 0.15s ease; }
+        .nav-arrow:active { transform: scale(1.4) rotate(10deg); }
+        @keyframes confetti-fall {
+          0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(80px) rotate(360deg); opacity: 0; }
+        }
+        @keyframes confetti-rain {
+          0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(100vh) rotate(540deg); opacity: 0; }
+        }
+        .confetti-piece { position: fixed; width: 7px; height: 7px; border-radius: 2px; pointer-events: none; }
+        @keyframes celebrate-in {
+          0% { opacity: 0; transform: translateY(-6px) scale(0.95); }
+          10% { opacity: 1; transform: translateY(0) scale(1); }
+          85% { opacity: 1; }
+          100% { opacity: 0; transform: translateY(-6px) scale(0.95); }
+        }
+        .celebrate-banner { animation: celebrate-in 3.5s ease forwards; }
+        @keyframes frog-scared {
+          0%, 100% { transform: scale(1) rotate(0deg); }
+          20% { transform: scale(1.4) rotate(-18deg); }
+          45% { transform: scale(1.15) rotate(14deg); }
+          70% { transform: scale(1.3) rotate(-10deg); }
+        }
+        .frog-scared { animation: frog-scared 0.22s ease; }
+        @keyframes frog-look {
+          0%, 100% { transform: rotate(0deg); }
+          25% { transform: rotate(-20deg); }
+          50% { transform: rotate(0deg); }
+          75% { transform: rotate(20deg); }
+        }
+        .frog-look { animation: frog-look 1.8s ease-in-out; }
+        @keyframes frog-dance {
+          0%, 100% { transform: translateY(0) rotate(0deg); }
+          20% { transform: translateY(-7px) rotate(-10deg); }
+          40% { transform: translateY(0) rotate(10deg); }
+          60% { transform: translateY(-7px) rotate(-10deg); }
+          80% { transform: translateY(0) rotate(10deg); }
+        }
+        .frog-dance { animation: frog-dance 0.7s ease-in-out 3; }
+        @keyframes frog-peek {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.3); }
+        }
+        .frog-peek { animation: frog-peek 0.9s ease-in-out; }
+        @keyframes frog-wiggle {
+          0%, 100% { transform: translateX(0) rotate(0deg); }
+          25% { transform: translateX(-5px) rotate(-6deg); }
+          75% { transform: translateX(5px) rotate(6deg); }
+        }
+        .frog-wiggle { animation: frog-wiggle 0.35s ease-in-out 3; }
+        @keyframes frog-tilt {
+          0%, 100% { transform: rotate(0deg) translateY(0); }
+          50% { transform: rotate(12deg) translateY(-3px); }
+        }
+        .frog-tilt { animation: frog-tilt 1.4s ease-in-out; }
+        @keyframes sweat-pop {
+          0% { opacity: 0; transform: translateY(0) scale(0.6); }
+          30% { opacity: 1; transform: translateY(-4px) scale(1); }
+          100% { opacity: 0; transform: translateY(-16px) scale(0.8); }
+        }
+        .sweat-pop { animation: sweat-pop 0.65s ease-out forwards; }
+        @keyframes float-package {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-8px); }
+        }
+        .floaty { animation: float-package 1.1s ease-in-out infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .stamp-btn { transition: none; }
+          .nav-arrow { transition: none; }
+          .nav-arrow:active { transform: none; }
+          .floaty { animation: none; }
+          .confetti-piece { display: none; }
+          .frog-look, .frog-dance, .frog-peek, .frog-wiggle, .frog-tilt, .frog-scared, .sweat-pop { animation: none; }
+        }
       `}</style>
 
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "32px 20px 80px" }}>
@@ -589,13 +851,13 @@ export default function WGPlan() {
         {activeTab === "cleaning" && (
           <>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
-              <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+              <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
                 <ChevronLeft size={20} />
               </button>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
                 {weekLabel}
               </span>
-              <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+              <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
                 <ChevronRight size={20} />
               </button>
             </div>
@@ -610,16 +872,27 @@ export default function WGPlan() {
               </span>
             </div>
 
+            {celebrateCleaning && (
+              <div className="celebrate-banner" style={{ textAlign: "center", background: "#5A7A5C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
+                🎉 Alles erledigt diese Woche!
+              </div>
+            )}
+
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
               {cleaningAssignments.map((a, i) => {
                 const done = !!doneCleaning[i];
                 return (
-                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
+                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1, alignItems: a.extraTask ? "flex-start" : "center" }}>
+                    <div style={{ display: "flex", alignItems: a.extraTask ? "flex-start" : "center", gap: 12, minWidth: 0 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0, marginTop: a.extraTask ? 2 : 0 }}>
                         {String(i + 1).padStart(2, "0")}
                       </span>
-                      <span style={{ fontSize: 16, fontWeight: 500, textDecoration: done ? "line-through" : "none" }}>{a.person}</span>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span style={{ fontSize: 16, fontWeight: 500, textDecoration: done ? "line-through" : "none" }}>{a.person}</span>
+                        {a.extraTask && (
+                          <span style={{ fontSize: 12, color: "#9A6B1F", fontWeight: 600 }}>+ {a.extraTask}</span>
+                        )}
+                      </div>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
                       <span style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
@@ -688,13 +961,13 @@ export default function WGPlan() {
         {activeTab === "supply" && (
           <>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
-              <button onClick={() => setMonthOffset(o => o - 1)} aria-label="Vorheriger Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+              <button onClick={() => setMonthOffset(o => o - 1)} aria-label="Vorheriger Monat" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
                 <ChevronLeft size={20} />
               </button>
               <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
                 {monthLabel}
               </span>
-              <button onClick={() => setMonthOffset(o => o + 1)} aria-label="Nächster Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+              <button onClick={() => setMonthOffset(o => o + 1)} aria-label="Nächster Monat" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
                 <ChevronRight size={20} />
               </button>
             </div>
@@ -708,6 +981,12 @@ export default function WGPlan() {
                 {doneSupplyCount}/{items.length} erledigt
               </span>
             </div>
+
+            {celebrateSupply && (
+              <div className="celebrate-banner" style={{ textAlign: "center", background: "#C68B2C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
+                🎉 Diesen Monat alles besorgt!
+              </div>
+            )}
 
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
               {supplyAssignments.map((a, i) => {
@@ -781,10 +1060,29 @@ export default function WGPlan() {
         {/* ===================== WG-TREFFEN ===================== */}
         {activeTab === "meeting" && (
           <>
-            <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 24, display: "flex", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 120 }}>
+            <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 140 }}>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
-                  Wann?
+                  Datum
+                </div>
+                {isAdmin ? (
+                  <input
+                    type="date"
+                    value={meetingInfo.date}
+                    onChange={(e) => updateMeetingField("date", e.target.value)}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0" }}>
+                    {meetingInfo.date
+                      ? `${WEEKDAY_FULL[new Date(meetingInfo.date + "T00:00:00").getDay()]}, ${fmtDDMMYYYY(new Date(meetingInfo.date + "T00:00:00"))}`
+                      : "Noch kein Termin"}
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 100 }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
+                  Uhrzeit
                 </div>
                 {isAdmin ? (
                   <input
@@ -796,7 +1094,7 @@ export default function WGPlan() {
                   <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0", fontFamily: "'IBM Plex Mono', monospace" }}>{meetingInfo.time} Uhr</div>
                 )}
               </div>
-              <div style={{ flex: 1, minWidth: 120 }}>
+              <div style={{ flex: 1, minWidth: 140 }}>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
                   Wo?
                 </div>
@@ -811,6 +1109,16 @@ export default function WGPlan() {
                 )}
               </div>
             </div>
+
+            {meetingInfo.date ? (
+              <button onClick={exportMeeting} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 24 }}>
+                <CalendarPlus size={15} /> Termin in Kalender
+              </button>
+            ) : (
+              <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 24 }}>
+                Sobald ein Datum eingetragen ist, kann jeder den Termin in seinen Kalender exportieren.
+              </p>
+            )}
 
             <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 12px" }}>Anmerkungen</h2>
 
@@ -930,6 +1238,55 @@ export default function WGPlan() {
           lädt sich jeder eine .ics-Datei herunter und kann sie in Google Kalender, Apple Kalender o.ä. importieren.
           Neue Gegenstände oder Räume könnt ihr über "Vorschläge" einreichen.
         </p>
+      </div>
+
+      {confetti.map(burst => (
+        <React.Fragment key={burst.id}>
+          {burst.pieces.map(p => (
+            <span
+              key={p.id}
+              className="confetti-piece"
+              style={burst.rain
+                ? { left: p.x, top: -10, background: p.color, animation: `confetti-rain 1.6s ease-in forwards`, animationDelay: `${p.delay}s` }
+                : { left: burst.x + p.dx, top: burst.y, background: p.color, animation: `confetti-fall 0.9s ease-out forwards`, animationDelay: `${p.delay}s` }
+              }
+            />
+          ))}
+        </React.Fragment>
+      ))}
+
+      <div
+        style={{
+          position: "fixed",
+          left: frogPos.x,
+          top: frogPos.y,
+          transition: "left 0.45s cubic-bezier(.34,1.56,.64,1), top 0.45s cubic-bezier(.34,1.56,.64,1)",
+          zIndex: 500,
+        }}
+      >
+        {frogSweat && (
+          <span className="sweat-pop" style={{ position: "absolute", top: -10, right: -6, fontSize: 15 }}>
+            💦
+          </span>
+        )}
+        <button
+          onClick={runFrogAway}
+          aria-label="Kleiner Frosch"
+          title="Ribbit!"
+          className={frogScared ? "frog-scared" : frogAction}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            padding: 4,
+            fontSize: 30,
+            lineHeight: 1,
+            display: "inline-block",
+            transform: frogFlip ? "scaleX(-1)" : "scaleX(1)",
+          }}
+        >
+          🐸
+        </button>
       </div>
     </div>
   );
