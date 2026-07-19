@@ -1,18 +1,29 @@
 import React, { useState, useEffect } from "react";
-import { ref, onValue, set as dbSet } from "firebase/database";
-import { db } from "./firebase";
-import { Plus, X, Copy, Check, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus } from "lucide-react";
+import { ref, onValue, set as dbSet, push, remove as dbRemove } from "firebase/database";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { db, auth } from "./firebase";
+import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History } from "lucide-react";
 
 const DEFAULT_PEOPLE = ["Hannes", "Mareike", "Mirko"];
 const DEFAULT_ITEMS = ["Klopapier", "WC-Reiniger", "Spülmittel", "Müllbeutel"];
 const DEFAULT_ROOMS = ["Küche", "Flur", "Bad"];
 const CONFIG_PATH = "wg-plan-config";
+const SUGGESTIONS_PATH = "wg-plan-suggestions";
+const STATUS_PATH = "wg-plan-status";
+const MEETING_PATH = "wg-plan-meeting";
+const DEFAULT_MEETING_INFO = { time: "18:00", place: "in der WG" };
+const HISTORY_LENGTH = 6;
 
 const MONTH_NAMES = [
   "Januar", "Februar", "März", "April", "Mai", "Juni",
   "Juli", "August", "September", "Oktober", "November", "Dezember"
 ];
 const WEEKDAY_SHORT = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+
+function totalMonths(ym) {
+  const [y, m] = ym.split("-").map(Number);
+  return y * 12 + (m - 1);
+}
 
 function monthIndexFromStart(startYM, offset) {
   const [sy, sm] = startYM.split("-").map(Number);
@@ -56,6 +67,13 @@ function currentWindowFriday() {
   const m = String(f.getMonth() + 1).padStart(2, "0");
   const d = String(f.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function icsDate(d) {
@@ -118,20 +136,46 @@ function defaultConfig() {
   };
 }
 
+const TABS = [
+  { key: "cleaning", label: "Putzplan", icon: Sparkles },
+  { key: "supply", label: "Einkauf", icon: Package },
+  { key: "meeting", label: "WG-Treffen", icon: Users },
+];
+
 export default function WGPlan() {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("cleaning");
   const [monthOffset, setMonthOffset] = useState(0);
   const [weekOffset, setWeekOffset] = useState(0);
-  const [copiedSupply, setCopiedSupply] = useState(false);
-  const [copiedCleaning, setCopiedCleaning] = useState(false);
-  const [copiedAll, setCopiedAll] = useState(false);
   const [newItem, setNewItem] = useState("");
   const [newRoom, setNewRoom] = useState("");
   const [editingPeople, setEditingPeople] = useState(false);
+  const [showCleaningHistory, setShowCleaningHistory] = useState(false);
+  const [showSupplyHistory, setShowSupplyHistory] = useState(false);
   const [saveError, setSaveError] = useState(false);
 
-  // Live-Sync: hört auf Firebase und übernimmt Änderungen anderer Mitbewohner:innen
+  // Admin-Login
+  const [user, setUser] = useState(null);
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const isAdmin = !!user;
+
+  // Vorschläge
+  const [suggestions, setSuggestions] = useState({});
+  const [suggestionText, setSuggestionText] = useState("");
+
+  // Erledigt-Status (pro Woche/Monat, admin-only)
+  const [status, setStatus] = useState({});
+
+  // WG-Treffen
+  const [meetingInfo, setMeetingInfo] = useState(DEFAULT_MEETING_INFO);
+  const [meetingNotes, setMeetingNotes] = useState({});
+  const [noteText, setNoteText] = useState("");
+
+  // Live-Sync: hört auf Firebase und übernimmt Änderungen anderer Mitbewohner
   // sofort, ohne dass die Seite neu geladen werden muss.
   useEffect(() => {
     const configRef = ref(db, CONFIG_PATH);
@@ -162,6 +206,47 @@ export default function WGPlan() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const suggestionsRef = ref(db, SUGGESTIONS_PATH);
+    const unsubscribe = onValue(suggestionsRef, (snapshot) => {
+      setSuggestions(snapshot.val() || {});
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const statusRef = ref(db, STATUS_PATH);
+    const unsubscribe = onValue(statusRef, (snapshot) => {
+      setStatus(snapshot.val() || {});
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const infoRef = ref(db, `${MEETING_PATH}/info`);
+    const unsubscribe = onValue(infoRef, (snapshot) => {
+      const data = snapshot.val();
+      setMeetingInfo({
+        time: data?.time || DEFAULT_MEETING_INFO.time,
+        place: data?.place || DEFAULT_MEETING_INFO.place,
+      });
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const notesRef = ref(db, `${MEETING_PATH}/notes`);
+    const unsubscribe = onValue(notesRef, (snapshot) => {
+      setMeetingNotes(snapshot.val() || {});
+    });
+    return () => unsubscribe();
+  }, []);
+
   const save = async (next) => {
     setConfig(next);
     try {
@@ -170,6 +255,61 @@ export default function WGPlan() {
     } catch (e) {
       setSaveError(true);
     }
+  };
+
+  const handleLogin = async () => {
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+      setAuthError("");
+      setShowLogin(false);
+      setLoginPassword("");
+    } catch (e) {
+      setAuthError("Login fehlgeschlagen — E-Mail oder Passwort falsch.");
+    }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  const addSuggestion = () => {
+    const v = suggestionText.trim();
+    if (!v) return;
+    push(ref(db, SUGGESTIONS_PATH), {
+      text: v,
+      createdAt: Date.now(),
+    });
+    setSuggestionText("");
+  };
+
+  const dismissSuggestion = (id) => {
+    dbRemove(ref(db, `${SUGGESTIONS_PATH}/${id}`));
+  };
+
+  const toggleCleaningDone = (weekKey, idx, current) => {
+    dbSet(ref(db, `${STATUS_PATH}/cleaning/${weekKey}/${idx}`), !current);
+  };
+
+  const toggleSupplyDone = (monthKey, idx, current) => {
+    dbSet(ref(db, `${STATUS_PATH}/supply/${monthKey}/${idx}`), !current);
+  };
+
+  const updateMeetingField = (field, value) => {
+    const next = { ...meetingInfo, [field]: value };
+    setMeetingInfo(next);
+    dbSet(ref(db, `${MEETING_PATH}/info`), next).catch(() => setSaveError(true));
+  };
+
+  const addMeetingNote = () => {
+    const v = noteText.trim();
+    if (!v) return;
+    push(ref(db, `${MEETING_PATH}/notes`), {
+      text: v,
+      createdAt: Date.now(),
+    });
+    setNoteText("");
+  };
+
+  const dismissMeetingNote = (id) => {
+    dbRemove(ref(db, `${MEETING_PATH}/notes/${id}`));
   };
 
   if (loading || !config) {
@@ -183,21 +323,55 @@ export default function WGPlan() {
   const { people, items, startMonth, rooms, anchorFriday } = config;
 
   // Supply rotation (monthly)
-  const { label: monthLabel } = monthIndexFromStart(startMonth, monthOffset);
+  const { y: supplyY, m: supplyM, label: monthLabel } = monthIndexFromStart(startMonth, monthOffset);
+  const monthKey = `${supplyY}-${String(supplyM + 1).padStart(2, "0")}`;
   const supplyAssignments = items.map((item, i) => {
     const personIdx = (monthOffset + i) % people.length;
     return { item, person: people[personIdx] };
   });
+  const doneSupply = status.supply?.[monthKey] || {};
+  const doneSupplyCount = items.filter((_, i) => doneSupply[i]).length;
 
   // Cleaning rotation (weekly, Fri-Sun)
   const fridayDate = addDays(anchorFriday, weekOffset * 7);
   const sundayDate = addDays(anchorFriday, weekOffset * 7 + 2);
+  const weekKey = isoDate(fridayDate);
+  const doneCleaning = status.cleaning?.[weekKey] || {};
+  const doneCleaningCount = people.filter((_, i) => doneCleaning[i]).length;
   const weekLabel = `${WEEKDAY_SHORT[5]} ${fmtDDMM(fridayDate)}–${WEEKDAY_SHORT[0]} ${fmtDDMMYYYY(sundayDate)}`;
   // Cleaning rotation (weekly, Fri-Sun) — people stay in fixed order, rooms rotate underneath them
   const cleaningAssignments = people.map((person, p) => {
     const n = rooms.length;
     const roomIdx = ((((p - weekOffset) % n) + n) % n);
     return { person, room: rooms[roomIdx], roomIdx };
+  });
+
+  // Verlauf: letzte HISTORY_LENGTH Wochen/Monate, unabhängig von der aktuell angezeigten Woche/Monat
+  const cleaningHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
+    const w = -idx;
+    const fd = addDays(anchorFriday, w * 7);
+    const key = isoDate(fd);
+    const doneMap = status.cleaning?.[key] || {};
+    return {
+      key,
+      label: `${fmtDDMM(fd)}–${fmtDDMM(addDays(anchorFriday, w * 7 + 2))}`,
+      done: people.filter((_, i) => doneMap[i]).length,
+      total: people.length,
+    };
+  });
+
+  const currentMonthOffset = totalMonths(todayYM()) - totalMonths(startMonth);
+  const supplyHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
+    const offset = currentMonthOffset - idx;
+    const { y, m, label } = monthIndexFromStart(startMonth, offset);
+    const key = `${y}-${String(m + 1).padStart(2, "0")}`;
+    const doneMap = status.supply?.[key] || {};
+    return {
+      key,
+      label,
+      done: items.filter((_, i) => doneMap[i]).length,
+      total: items.length,
+    };
   });
 
   const addItem = () => {
@@ -225,20 +399,6 @@ export default function WGPlan() {
   const removePerson = (idx) => {
     if (people.length <= 1) return;
     save({ ...config, people: people.filter((_, i) => i !== idx) });
-  };
-
-  const supplyText = () => {
-    const lines = [`🧻 WG-Einkaufsplan – ${monthLabel}`, ""];
-    supplyAssignments.forEach(a => lines.push(`• ${a.item}: ${a.person}`));
-    lines.push("", "Bitte rechtzeitig besorgen, danke! 🙏");
-    return lines.join("\n");
-  };
-
-  const cleaningText = () => {
-    const lines = [`🧹 Wochenputz – ${weekLabel}`, ""];
-    cleaningAssignments.forEach(a => lines.push(`• ${a.person}: ${a.room}`));
-    lines.push("", "Bis Sonntag erledigen, danke! 🧽");
-    return lines.join("\n");
   };
 
   const exportCleaningWeek = () => {
@@ -310,14 +470,6 @@ export default function WGPlan() {
     downloadICS("einkaufsplan-12monate.ics", events);
   };
 
-  const copy = async (text, setFlag) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setFlag(true);
-      setTimeout(() => setFlag(false), 2000);
-    } catch (e) { /* noop */ }
-  };
-
   const cardBase = {
     background: "#FFFFFF",
     border: "1.5px solid #DDD6C4",
@@ -328,6 +480,19 @@ export default function WGPlan() {
     justifyContent: "space-between",
     gap: 12,
   };
+
+  const inputStyle = { flex: 1, padding: "12px 14px", borderRadius: 10, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 15 };
+
+  const toggleBtnStyle = { background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 };
+
+  const suggestionList = Object.entries(suggestions).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
+  const noteList = Object.entries(meetingNotes).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
+
+  const doneToggleBtn = (done, onClick) => (
+    <button onClick={onClick} aria-label={done ? "als nicht erledigt markieren" : "als erledigt markieren"} style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "#C9BFA5", padding: 8, margin: -8, display: "flex" }}>
+      {done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+    </button>
+  );
 
   return (
     <div style={{
@@ -342,228 +507,416 @@ export default function WGPlan() {
         body { margin: 0; }
         .stamp-btn { transition: transform 0.15s ease; }
         .stamp-btn:hover { transform: translateY(-2px); }
-        .stamp-btn:focus-visible, button:focus-visible, input:focus-visible {
+        .stamp-btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
           outline: 3px solid #C68B2C;
           outline-offset: 2px;
         }
-        input { font-family: inherit; }
+        input, select { font-family: inherit; }
         @media (prefers-reduced-motion: reduce) { .stamp-btn { transition: none; } }
       `}</style>
 
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "32px 20px 80px" }}>
 
         {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-          <Package size={22} color="#C68B2C" strokeWidth={2.5} />
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600 }}>
-            WG-Plan
-          </span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Package size={22} color="#C68B2C" strokeWidth={2.5} />
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600 }}>
+              WG-Plan
+            </span>
+          </div>
+          {isAdmin ? (
+            <button onClick={handleLogout} aria-label="Abmelden" title="Als Admin abmelden" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "6px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6B7A6D" }}>
+              <LogOut size={14} /> Admin
+            </button>
+          ) : (
+            <button onClick={() => setShowLogin(v => !v)} aria-label="Admin-Login" title="Admin-Login" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B7A6D" }}>
+              <Lock size={14} />
+            </button>
+          )}
         </div>
-        <h1 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: "clamp(28px, 6vw, 42px)", margin: "6px 0 32px", lineHeight: 1.05 }}>
+        <h1 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: "clamp(28px, 6vw, 42px)", margin: "6px 0 24px", lineHeight: 1.05 }}>
           Wer macht was?
         </h1>
 
-        {/* ===================== PUTZPLAN (weekly) ===================== */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <Sparkles size={18} color="#3E5C76" />
-          <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 18, margin: 0 }}>Wochenputz</h2>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
-          <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-            <ChevronLeft size={20} />
-          </button>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
-            {weekLabel}
-          </span>
-          <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-            <ChevronRight size={20} />
-          </button>
-        </div>
-        {weekOffset !== 0 && (
-          <button onClick={() => setWeekOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, marginBottom: 16, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
-            zurück zur aktuellen Woche
-          </button>
+        {!isAdmin && showLogin && (
+          <div style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, padding: 16, marginBottom: 24, display: "grid", gap: 8 }}>
+            <input
+              value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              placeholder="E-Mail"
+              type="email"
+              style={inputStyle}
+            />
+            <input
+              value={loginPassword}
+              onChange={(e) => setLoginPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              placeholder="Passwort"
+              type="password"
+              style={inputStyle}
+            />
+            <button onClick={handleLogin} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "10px 16px", cursor: "pointer", fontWeight: 600 }}>
+              Anmelden
+            </button>
+            {authError && <p style={{ color: "#A5453B", fontSize: 13, margin: 0 }}>{authError}</p>}
+          </div>
         )}
 
-        <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-          {cleaningAssignments.map((a, i) => (
-            <div key={i} style={cardBase}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <span style={{ fontSize: 16, fontWeight: 500 }}>{a.person}</span>
-              </div>
-              <span style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
-                {a.room}
+        {/* Tab-Navigation */}
+        <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 14, padding: 4, marginBottom: 24 }}>
+          {TABS.map(t => {
+            const TabIcon = t.icon;
+            const active = activeTab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setActiveTab(t.key)}
+                style={{
+                  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  background: active ? "#20241F" : "none", color: active ? "#F1ECE0" : "#6B7A6D",
+                  border: "none", borderRadius: 10, padding: "10px 6px", cursor: "pointer",
+                  fontWeight: 600, fontSize: 13, fontFamily: "'Work Sans', sans-serif",
+                }}
+              >
+                <TabIcon size={15} /> {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ===================== PUTZPLAN (weekly) ===================== */}
+        {activeTab === "cleaning" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
+              <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+                <ChevronLeft size={20} />
+              </button>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
+                {weekLabel}
+              </span>
+              <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+                <ChevronRight size={20} />
+              </button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              {weekOffset !== 0 ? (
+                <button onClick={() => setWeekOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+                  zurück zur aktuellen Woche
+                </button>
+              ) : <span />}
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneCleaningCount === people.length ? "#5A7A5C" : "#8A8270" }}>
+                {doneCleaningCount}/{people.length} erledigt
               </span>
             </div>
-          ))}
-        </div>
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-          {rooms.map((room, i) => (
-            <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "6px 10px 6px 14px", fontSize: 13 }}>
-              {room}
-              <button onClick={() => removeRoom(i)} aria-label={`${room} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#8A8270", padding: 0, display: "flex" }}>
-                <X size={13} />
-              </button>
-            </span>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-          <input
-            value={newRoom}
-            onChange={(e) => setNewRoom(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addRoom()}
-            placeholder="Neuer Raum (z.B. Balkon)"
-            style={{ flex: 1, padding: "12px 14px", borderRadius: 10, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 15 }}
-          />
-          <button onClick={addRoom} className="stamp-btn" style={{ background: "#3E5C76", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
-            <Plus size={18} />
-          </button>
-        </div>
+            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+              {cleaningAssignments.map((a, i) => {
+                const done = !!doneCleaning[i];
+                return (
+                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 500, textDecoration: done ? "line-through" : "none" }}>{a.person}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+                      <span style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
+                        {a.room}
+                      </span>
+                      {isAdmin ? doneToggleBtn(done, () => toggleCleaningDone(weekKey, i, done)) : (done && <CheckCircle2 size={20} color="#5A7A5C" />)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
-        <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 16 }}>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 10 }}>
-            Für WhatsApp
-          </div>
-          <pre style={{ whiteSpace: "pre-wrap", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "#F1ECE0", lineHeight: 1.6, margin: "0 0 14px" }}>
-            {cleaningText()}
-          </pre>
-          <button onClick={() => copy(cleaningText(), setCopiedCleaning)} className="stamp-btn" style={{ background: copiedCleaning ? "#5A7A5C" : "#3E5C76", color: "#FFFDF8", border: "none", borderRadius: 10, padding: "10px 18px", cursor: "pointer", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
-            {copiedCleaning ? <Check size={16} /> : <Copy size={16} />}
-            {copiedCleaning ? "Kopiert!" : "Text kopieren"}
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 40 }}>
-          <button onClick={exportCleaningWeek} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-            <CalendarPlus size={15} /> Diese Woche in Kalender
-          </button>
-          <button onClick={() => exportCleaningRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-            <CalendarPlus size={15} /> Nächste 12 Wochen
-          </button>
-        </div>
-
-        {/* ===================== EINKAUFSPLAN (monthly) ===================== */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-          <Package size={18} color="#C68B2C" />
-          <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 18, margin: 0 }}>Einkauf / Vorrat</h2>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 16 }}>
-          <button onClick={() => setMonthOffset(o => o - 1)} aria-label="Vorheriger Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-            <ChevronLeft size={20} />
-          </button>
-          <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
-            {monthLabel}
-          </span>
-          <button onClick={() => setMonthOffset(o => o + 1)} aria-label="Nächster Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-            <ChevronRight size={20} />
-          </button>
-        </div>
-        {monthOffset !== 0 && (
-          <button onClick={() => setMonthOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, marginBottom: 16, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
-            zurück zum aktuellen Monat
-          </button>
-        )}
-
-        <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-          {supplyAssignments.map((a, i) => (
-            <div key={i} style={cardBase}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
-                  {String(i + 1).padStart(2, "0")}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {rooms.map((room, i) => (
+                <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: isAdmin ? "6px 10px 6px 14px" : "6px 14px", fontSize: 13 }}>
+                  {room}
+                  {isAdmin && (
+                    <button onClick={() => removeRoom(i)} aria-label={`${room} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#8A8270", padding: 0, display: "flex" }}>
+                      <X size={13} />
+                    </button>
+                  )}
                 </span>
-                <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {a.item}
-                </span>
-                <button onClick={() => removeItem(i)} aria-label={`${a.item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2 }}>
-                  <X size={14} />
+              ))}
+            </div>
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+                <input
+                  value={newRoom}
+                  onChange={(e) => setNewRoom(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addRoom()}
+                  placeholder="Neuer Raum (z.B. Balkon)"
+                  style={inputStyle}
+                />
+                <button onClick={addRoom} className="stamp-btn" style={{ background: "#3E5C76", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                  <Plus size={18} />
                 </button>
               </div>
-              <span style={{ background: "#C68B2C", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
-                {a.person}
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+              <button onClick={exportCleaningWeek} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                <CalendarPlus size={15} /> Diese Woche in Kalender
+              </button>
+              <button onClick={() => exportCleaningRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                <CalendarPlus size={15} /> Nächste 12 Wochen
+              </button>
+            </div>
+
+            <button onClick={() => setShowCleaningHistory(v => !v)} style={{ ...toggleBtnStyle, marginBottom: 10 }}>
+              <History size={14} /> Verlauf {showCleaningHistory ? "▲" : "▼"}
+            </button>
+            {showCleaningHistory && (
+              <div style={{ display: "grid", gap: 8, marginBottom: 40 }}>
+                {cleaningHistory.map(h => (
+                  <div key={h.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "8px 14px", fontSize: 13 }}>
+                    <span>{h.label}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: h.done === h.total ? "#5A7A5C" : "#8A8270" }}>{h.done}/{h.total} erledigt</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ===================== EINKAUFSPLAN (monthly) ===================== */}
+        {activeTab === "supply" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
+              <button onClick={() => setMonthOffset(o => o - 1)} aria-label="Vorheriger Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+                <ChevronLeft size={20} />
+              </button>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
+                {monthLabel}
+              </span>
+              <button onClick={() => setMonthOffset(o => o + 1)} aria-label="Nächster Monat" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+                <ChevronRight size={20} />
+              </button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              {monthOffset !== 0 ? (
+                <button onClick={() => setMonthOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+                  zurück zum aktuellen Monat
+                </button>
+              ) : <span />}
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneSupplyCount === items.length ? "#5A7A5C" : "#8A8270" }}>
+                {doneSupplyCount}/{items.length} erledigt
               </span>
             </div>
-          ))}
+
+            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+              {supplyAssignments.map((a, i) => {
+                const done = !!doneSupply[i];
+                return (
+                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: done ? "line-through" : "none" }}>
+                        {a.item}
+                      </span>
+                      {isAdmin && (
+                        <button onClick={() => removeItem(i)} aria-label={`${a.item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2 }}>
+                          <X size={14} />
+                        </button>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+                      <span style={{ background: "#C68B2C", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
+                        {a.person}
+                      </span>
+                      {isAdmin ? doneToggleBtn(done, () => toggleSupplyDone(monthKey, i, done)) : (done && <CheckCircle2 size={20} color="#5A7A5C" />)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {isAdmin && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+                <input
+                  value={newItem}
+                  onChange={(e) => setNewItem(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addItem()}
+                  placeholder="Neuer Gegenstand (z.B. Küchenrolle)"
+                  style={inputStyle}
+                />
+                <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                  <Plus size={18} />
+                </button>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
+              <button onClick={exportSupplyMonth} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                <CalendarPlus size={15} /> Diesen Monat in Kalender
+              </button>
+              <button onClick={() => exportSupplyRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                <CalendarPlus size={15} /> Nächste 12 Monate
+              </button>
+            </div>
+
+            <button onClick={() => setShowSupplyHistory(v => !v)} style={{ ...toggleBtnStyle, marginBottom: 10 }}>
+              <History size={14} /> Verlauf {showSupplyHistory ? "▲" : "▼"}
+            </button>
+            {showSupplyHistory && (
+              <div style={{ display: "grid", gap: 8, marginBottom: 40 }}>
+                {supplyHistory.map(h => (
+                  <div key={h.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "8px 14px", fontSize: 13 }}>
+                    <span>{h.label}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: h.done === h.total ? "#5A7A5C" : "#8A8270" }}>{h.done}/{h.total} erledigt</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ===================== WG-TREFFEN ===================== */}
+        {activeTab === "meeting" && (
+          <>
+            <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 24, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
+                  Wann?
+                </div>
+                {isAdmin ? (
+                  <input
+                    value={meetingInfo.time}
+                    onChange={(e) => updateMeetingField("time", e.target.value)}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0", fontFamily: "'IBM Plex Mono', monospace" }}>{meetingInfo.time} Uhr</div>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
+                  Wo?
+                </div>
+                {isAdmin ? (
+                  <input
+                    value={meetingInfo.place}
+                    onChange={(e) => updateMeetingField("place", e.target.value)}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16 }}
+                  />
+                ) : (
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0" }}>{meetingInfo.place}</div>
+                )}
+              </div>
+            </div>
+
+            <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 12px" }}>Anmerkungen</h2>
+
+            {noteList.length > 0 ? (
+              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+                {noteList.map(([id, n]) => (
+                  <div key={id} style={cardBase}>
+                    <span style={{ fontSize: 15 }}>{n.text}</span>
+                    {isAdmin && (
+                      <button onClick={() => dismissMeetingNote(id)} aria-label="Anmerkung löschen" title="Löschen" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#8A8270", display: "flex", flexShrink: 0 }}>
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 16 }}>Noch keine Anmerkungen.</p>
+            )}
+
+            <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+              Hier kann jeder notieren, was zur WG-Gruppe mitgebracht werden muss oder worüber sich
+              bis dahin schon mal Gedanken gemacht werden soll.
+            </p>
+            <div style={{ display: "flex", gap: 8, marginBottom: 40, flexWrap: "wrap" }}>
+              <input
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addMeetingNote()}
+                placeholder="Notizen..."
+                style={{ ...inputStyle, minWidth: 160 }}
+              />
+              <button onClick={addMeetingNote} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                <Plus size={18} />
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ===================== VORSCHLÄGE ===================== */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+          <Lightbulb size={18} color="#C68B2C" />
+          <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 18, margin: 0 }}>Vorschläge</h2>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+        {suggestionList.length > 0 ? (
+          <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+            {suggestionList.map(([id, s]) => (
+              <div key={id} style={cardBase}>
+                <span style={{ fontSize: 15 }}>{s.text}</span>
+                {isAdmin && (
+                  <button onClick={() => dismissSuggestion(id)} aria-label="Vorschlag löschen" title="Löschen" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#8A8270", display: "flex", flexShrink: 0 }}>
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 16 }}>Noch keine Vorschläge.</p>
+        )}
+
+        <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+          Hier könnt ihr Vorschläge, Ideen, Funktionswünsche oder sonst was reinschreiben —
+          ich schau dann, ob ich das umsetzen/integrieren kann.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 40, flexWrap: "wrap" }}>
           <input
-            value={newItem}
-            onChange={(e) => setNewItem(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addItem()}
-            placeholder="Neuer Gegenstand (z.B. Küchenrolle)"
-            style={{ flex: 1, padding: "12px 14px", borderRadius: 10, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 15 }}
+            value={suggestionText}
+            onChange={(e) => setSuggestionText(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addSuggestion()}
+            placeholder="Dein Vorschlag..."
+            style={{ ...inputStyle, minWidth: 160 }}
           />
-          <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+          <button onClick={addSuggestion} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
             <Plus size={18} />
           </button>
         </div>
 
-        <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 16 }}>
-          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 10 }}>
-            Für WhatsApp
+        {/* People editor — nur Admin */}
+        {isAdmin && (
+          <div style={{ marginBottom: 20 }}>
+            <button onClick={() => setEditingPeople(v => !v)} style={{ ...toggleBtnStyle, marginBottom: 10 }}>
+              Mitbewohner bearbeiten {editingPeople ? "▲" : "▼"}
+            </button>
+            {editingPeople && (
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {people.map((p, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8 }}>
+                    <input
+                      value={p}
+                      onChange={(e) => updatePerson(i, e.target.value)}
+                      style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 14 }}
+                    />
+                    <button onClick={() => removePerson(i)} aria-label={`${p} entfernen`} style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, cursor: "pointer", color: "#8A8270", padding: "0 10px" }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button onClick={addPerson} style={{ background: "none", border: "1.5px dashed #B9AF97", borderRadius: 8, padding: "8px", cursor: "pointer", color: "#6B7A6D", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  <Plus size={14} /> Person hinzufügen
+                </button>
+              </div>
+            )}
           </div>
-          <pre style={{ whiteSpace: "pre-wrap", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "#F1ECE0", lineHeight: 1.6, margin: "0 0 14px" }}>
-            {supplyText()}
-          </pre>
-          <button onClick={() => copy(supplyText(), setCopiedSupply)} className="stamp-btn" style={{ background: copiedSupply ? "#5A7A5C" : "#C68B2C", color: "#FFFDF8", border: "none", borderRadius: 10, padding: "10px 18px", cursor: "pointer", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
-            {copiedSupply ? <Check size={16} /> : <Copy size={16} />}
-            {copiedSupply ? "Kopiert!" : "Text kopieren"}
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 28 }}>
-          <button onClick={exportSupplyMonth} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-            <CalendarPlus size={15} /> Diesen Monat in Kalender
-          </button>
-          <button onClick={() => exportSupplyRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-            <CalendarPlus size={15} /> Nächste 12 Monate
-          </button>
-        </div>
-
-        {/* Combined copy */}
-        <button
-          onClick={() => copy(`${cleaningText()}\n\n---\n\n${supplyText()}`, setCopiedAll)}
-          className="stamp-btn"
-          style={{ width: "100%", background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "12px 18px", cursor: "pointer", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 32 }}
-        >
-          {copiedAll ? <Check size={16} /> : <Copy size={16} />}
-          {copiedAll ? "Beides kopiert!" : "Beides zusammen kopieren"}
-        </button>
-
-        {/* People editor */}
-        <div style={{ marginBottom: 20 }}>
-          <button
-            onClick={() => setEditingPeople(v => !v)}
-            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600, marginBottom: 10 }}
-          >
-            Mitbewohner:innen bearbeiten {editingPeople ? "▲" : "▼"}
-          </button>
-          {editingPeople && (
-            <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-              {people.map((p, i) => (
-                <div key={i} style={{ display: "flex", gap: 8 }}>
-                  <input
-                    value={p}
-                    onChange={(e) => updatePerson(i, e.target.value)}
-                    style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 14 }}
-                  />
-                  <button onClick={() => removePerson(i)} aria-label={`${p} entfernen`} style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, cursor: "pointer", color: "#8A8270", padding: "0 10px" }}>
-                    <X size={14} />
-                  </button>
-                </div>
-              ))}
-              <button onClick={addPerson} style={{ background: "none", border: "1.5px dashed #B9AF97", borderRadius: 8, padding: "8px", cursor: "pointer", color: "#6B7A6D", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                <Plus size={14} /> Person hinzufügen
-              </button>
-            </div>
-          )}
-        </div>
+        )}
 
         {saveError && (
           <p style={{ color: "#A5453B", fontSize: 13, marginTop: 8 }}>
@@ -572,9 +925,10 @@ export default function WGPlan() {
         )}
 
         <p style={{ fontSize: 12, color: "#9A9280", marginTop: 20, lineHeight: 1.6 }}>
-          Die Liste wird geteilt gespeichert — öffnet jede:r Mitbewohner:in diesen Link, sieht er/sie denselben Stand.
+          Die Liste wird geteilt gespeichert — öffnet jeder Mitbewohner diesen Link, sieht er denselben Stand.
           Putzplan rotiert wöchentlich (Fr–So), Einkaufsplan monatlich — beides automatisch. Über die Kalender-Buttons
-          lädt sich jede:r eine .ics-Datei herunter und kann sie in Google Kalender, Apple Kalender o.ä. importieren.
+          lädt sich jeder eine .ics-Datei herunter und kann sie in Google Kalender, Apple Kalender o.ä. importieren.
+          Neue Gegenstände oder Räume könnt ihr über "Vorschläge" einreichen.
         </p>
       </div>
     </div>

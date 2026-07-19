@@ -1,5 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
+import { getAuth } from "firebase/auth";
 
 // Firebase Web-Config ist kein Geheimnis (siehe Firebase-Doku) — Zugriffsschutz
 // erfolgt über die Realtime Database Security Rules, nicht durch Geheimhaltung
@@ -16,3 +17,4 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 export const db = getDatabase(app);
+export const auth = getAuth(app);
