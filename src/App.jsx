@@ -322,7 +322,9 @@ export default function WGPlan() {
 
   // Transition-Erkennung (unvollständig -> vollständig) in echten Effects statt während des Renderns,
   // damit kein "setState während Render"-Muster genutzt wird.
-  const safeWeekKey = config ? isoDate(addDays(config.anchorFriday, weekOffset * 7)) : null;
+  const safeWeekKey = config
+    ? isoDate(addDays(config.anchorFriday, (weeksBetweenDates(config.anchorFriday, new Date(currentWindowFriday() + "T00:00:00")) + weekOffset) * 7))
+    : null;
   const safeDoneCleaningCount = config && safeWeekKey
     ? config.people.filter((_, i) => status.cleaning?.[safeWeekKey]?.[i]).length
     : 0;
@@ -336,7 +338,8 @@ export default function WGPlan() {
     prevCleaningCompleteRef.current = complete;
   }, [safeDoneCleaningCount, safePeopleLen, weekOffset]);
 
-  const safeMonthKey = config ? `${monthIndexFromStart(config.startMonth, monthOffset).y}-${String(monthIndexFromStart(config.startMonth, monthOffset).m + 1).padStart(2, "0")}` : null;
+  const safeEffMonthOffset = config ? (totalMonths(todayYM()) - totalMonths(config.startMonth) + monthOffset) : 0;
+  const safeMonthKey = config ? `${monthIndexFromStart(config.startMonth, safeEffMonthOffset).y}-${String(monthIndexFromStart(config.startMonth, safeEffMonthOffset).m + 1).padStart(2, "0")}` : null;
   const safeDoneSupplyCount = config && safeMonthKey
     ? config.items.filter((_, i) => status.supply?.[safeMonthKey]?.[i]).length
     : 0;
@@ -473,19 +476,27 @@ export default function WGPlan() {
 
   const { people, items, startMonth, rooms, anchorFriday, extraTaskAnchor } = config;
 
+  // Welche Woche/welcher Monat als "aktuell" (Offset 0) gilt, wird aus dem echten Datum
+  // bestimmt und wandert automatisch mit. Die Rotation (wer welchen Raum/Gegenstand hat)
+  // bleibt weiterhin fest am gespeicherten anchorFriday/startMonth verankert.
+  const weeksFromAnchor = weeksBetweenDates(anchorFriday, new Date(currentWindowFriday() + "T00:00:00"));
+  const currentMonthOffset = totalMonths(todayYM()) - totalMonths(startMonth);
+  const effWeekIndex = weeksFromAnchor + weekOffset;
+  const effMonthOffset = currentMonthOffset + monthOffset;
+
   // Supply rotation (monthly)
-  const { y: supplyY, m: supplyM, label: monthLabel } = monthIndexFromStart(startMonth, monthOffset);
+  const { y: supplyY, m: supplyM, label: monthLabel } = monthIndexFromStart(startMonth, effMonthOffset);
   const monthKey = `${supplyY}-${String(supplyM + 1).padStart(2, "0")}`;
   const supplyAssignments = items.map((item, i) => {
-    const personIdx = (monthOffset + i) % people.length;
+    const personIdx = (((effMonthOffset + i) % people.length) + people.length) % people.length;
     return { item, person: people[personIdx] };
   });
   const doneSupply = status.supply?.[monthKey] || {};
   const doneSupplyCount = items.filter((_, i) => doneSupply[i]).length;
 
   // Cleaning rotation (weekly, Fri-Sun)
-  const fridayDate = addDays(anchorFriday, weekOffset * 7);
-  const sundayDate = addDays(anchorFriday, weekOffset * 7 + 2);
+  const fridayDate = addDays(anchorFriday, effWeekIndex * 7);
+  const sundayDate = addDays(anchorFriday, effWeekIndex * 7 + 2);
   const weekKey = isoDate(fridayDate);
   const doneCleaning = status.cleaning?.[weekKey] || {};
   const doneCleaningCount = people.filter((_, i) => doneCleaning[i]).length;
@@ -499,27 +510,26 @@ export default function WGPlan() {
   // Cleaning rotation (weekly, Fri-Sun) — people stay in fixed order, rooms rotate underneath them
   const cleaningAssignments = people.map((person, p) => {
     const n = rooms.length;
-    const roomIdx = ((((p - weekOffset) % n) + n) % n);
+    const roomIdx = ((((p - effWeekIndex) % n) + n) % n);
     const room = rooms[roomIdx];
     const extraTask = isExtraTaskWeek ? MONTHLY_EXTRA_TASKS[room] : undefined;
     return { person, room, roomIdx, extraTask };
   });
 
-  // Verlauf: letzte HISTORY_LENGTH Wochen/Monate, unabhängig von der aktuell angezeigten Woche/Monat
+  // Verlauf: letzte HISTORY_LENGTH Wochen/Monate relativ zur echten aktuellen Woche/Monat
   const cleaningHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
-    const w = -idx;
-    const fd = addDays(anchorFriday, w * 7);
+    const wi = weeksFromAnchor - idx;
+    const fd = addDays(anchorFriday, wi * 7);
     const key = isoDate(fd);
     const doneMap = status.cleaning?.[key] || {};
     return {
       key,
-      label: `${fmtDDMM(fd)}–${fmtDDMM(addDays(anchorFriday, w * 7 + 2))}`,
+      label: `${fmtDDMM(fd)}–${fmtDDMM(addDays(anchorFriday, wi * 7 + 2))}`,
       done: people.filter((_, i) => doneMap[i]).length,
       total: people.length,
     };
   });
 
-  const currentMonthOffset = totalMonths(todayYM()) - totalMonths(startMonth);
   const supplyHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
     const offset = currentMonthOffset - idx;
     const { y, m, label } = monthIndexFromStart(startMonth, offset);
@@ -563,7 +573,7 @@ export default function WGPlan() {
   const exportCleaningWeek = () => {
     const desc = cleaningAssignments.map(a => `${a.person}: ${a.room}${a.extraTask ? ` (+ ${a.extraTask})` : ""}`).join("\n");
     const start = fridayDate;
-    const end = addDays(anchorFriday, weekOffset * 7 + 3); // exclusive end = Monday
+    const end = addDays(anchorFriday, effWeekIndex * 7 + 3); // exclusive end = Monday
     downloadICS("wochenputz.ics", [{
       uid: `putz-${icsDate(start)}@wg-plan`,
       startDate: start,
@@ -577,11 +587,12 @@ export default function WGPlan() {
     const events = [];
     const n = rooms.length;
     for (let w = 0; w < weeks; w++) {
-      const wStart = addDays(anchorFriday, w * 7);
-      const wEnd = addDays(anchorFriday, w * 7 + 3);
+      const wi = weeksFromAnchor + w;
+      const wStart = addDays(anchorFriday, wi * 7);
+      const wEnd = addDays(anchorFriday, wi * 7 + 3);
       const weekIsExtra = isExtraTaskWeekFor(wStart);
       const assigns = people.map((person, p) => {
-        const roomIdx = ((((p - w) % n) + n) % n);
+        const roomIdx = ((((p - wi) % n) + n) % n);
         const room = rooms[roomIdx];
         const extraTask = weekIsExtra ? MONTHLY_EXTRA_TASKS[room] : undefined;
         return { person, room, extraTask };
@@ -599,7 +610,7 @@ export default function WGPlan() {
 
   const exportSupplyMonth = () => {
     const [sy, sm] = startMonth.split("-").map(Number);
-    const total = sy * 12 + (sm - 1) + monthOffset;
+    const total = sy * 12 + (sm - 1) + effMonthOffset;
     const y = Math.floor(total / 12), m = total % 12;
     const start = new Date(y, m, 1);
     const end = new Date(y, m + 1, 1);
@@ -616,11 +627,12 @@ export default function WGPlan() {
     const [sy, sm] = startMonth.split("-").map(Number);
     const events = [];
     for (let mo = 0; mo < months; mo++) {
-      const total = sy * 12 + (sm - 1) + mo;
+      const emo = currentMonthOffset + mo;
+      const total = sy * 12 + (sm - 1) + emo;
       const y = Math.floor(total / 12), m = total % 12;
       const start = new Date(y, m, 1);
       const end = new Date(y, m + 1, 1);
-      const assigns = items.map((item, i) => ({ item, person: people[(mo + i) % people.length] }));
+      const assigns = items.map((item, i) => ({ item, person: people[(((emo + i) % people.length) + people.length) % people.length] }));
       events.push({
         uid: `einkauf-${icsDate(start)}@wg-plan`,
         startDate: start,
