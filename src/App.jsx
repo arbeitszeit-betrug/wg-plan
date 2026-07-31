@@ -165,6 +165,7 @@ function defaultConfig() {
     extraTaskAnchor: isoDate(addDays(anchor, 7)),
     away: [],
     twoPersonAnchor: anchor,
+    itemUsers: {},
   };
 }
 
@@ -241,6 +242,7 @@ export default function WGPlan() {
             extraTaskAnchor: data.extraTaskAnchor || isoDate(addDays(resolvedAnchorFriday, 7)),
             away: data.away || [],
             twoPersonAnchor: data.twoPersonAnchor || currentWindowFriday(),
+            itemUsers: data.itemUsers || {},
           };
           setConfig(next);
           if (!data.extraTaskAnchor || !data.twoPersonAnchor) {
@@ -351,8 +353,8 @@ export default function WGPlan() {
     prevCleaningCompleteRef.current = complete;
   }, [safeDoneCleaningCount, safePresentLen, weekOffset]);
 
-  // Einkauf-Feier wird direkt beim "Hab eingekauft"-Klick ausgelöst (siehe finishShopping),
-  // nicht mehr aus einem Monats-Erledigt-Zähler.
+  // Einkauf-Feier wird direkt beim "gekauft"-Klick ausgelöst (siehe markBought bzw. der
+  // onClick in der Einkaufsliste), nicht mehr aus einem Monats-Erledigt-Zähler.
 
   const save = async (next) => {
     setConfig(next);
@@ -408,11 +410,20 @@ export default function WGPlan() {
     else dbSet(ref(db, path), level);
   };
 
-  // "Hab eingekauft": alle Meldungen zurücksetzen und den Einkauf an den Nächsten weitergeben.
-  const finishShopping = () => {
-    dbRemove(ref(db, `${STATUS_PATH}/supplyNeeds`));
-    dbSet(ref(db, `${STATUS_PATH}/supplyTurn`), (status.supplyTurn || 0) + 1);
-    setCelebrateSupply(true);
+  // "Gekauft" für einen einzelnen Gegenstand: Meldung löschen und den Zähler dieses
+  // Gegenstands +1 → beim nächsten Bedarf ist der nächste Nutzer dran (faire Rotation pro Artikel).
+  const markBought = (idx) => {
+    dbRemove(ref(db, `${STATUS_PATH}/supplyNeeds/${idx}`));
+    dbSet(ref(db, `${STATUS_PATH}/supplyCount/${idx}`), (status.supplyCount?.[idx] || 0) + 1);
+  };
+
+  // Admin: festlegen, wer einen Gegenstand nutzt (und damit ihn reihum kaufen muss).
+  const toggleItemUser = (name, person) => {
+    const current = config.itemUsers || {};
+    const base = current[name] && current[name].length ? current[name] : config.people;
+    const nextUsers = base.includes(person) ? base.filter((u) => u !== person) : [...base, person];
+    if (nextUsers.length === 0) return; // mindestens eine Person muss den Gegenstand nutzen
+    save({ ...config, itemUsers: { ...current, [name]: nextUsers } });
   };
 
   const CONFETTI_COLORS = ["#C68B2C", "#3E5C76", "#5A7A5C", "#A5453B", "#9A6B1F"];
@@ -492,6 +503,7 @@ export default function WGPlan() {
   }
 
   const { people, items, startMonth, rooms, anchorFriday, extraTaskAnchor, away, twoPersonAnchor } = config;
+  const itemUsers = config.itemUsers || {};
   const awayList = away || [];
   const presentPeople = people.filter((p) => !awayList.includes(p));
 
@@ -503,19 +515,40 @@ export default function WGPlan() {
   const effWeekIndex = weeksFromAnchor + weekOffset;
   const effMonthOffset = currentMonthOffset + monthOffset;
 
-  // Einkauf: bedarfsgesteuert statt fester Monats-Zuweisung.
+  // Einkauf: bedarfsgesteuert + faire Rotation PRO Gegenstand.
   // Jeder Gegenstand hat einen Bedarf-Status (null/genug, "low"/knapp, "empty"/leer),
-  // den alle setzen können. Nur Gemeldetes muss gekauft werden. Ein rotierender Zeiger
-  // (supplyTurn) bestimmt, wer als Nächstes einkaufen ist — über die anwesenden Personen.
+  // den alle setzen können. Nur Gemeldetes muss gekauft werden. Wer einen bestimmten
+  // Gegenstand kaufen muss, rotiert nur unter den Nutzern dieses Gegenstands und wechselt
+  // erst, wenn er tatsächlich gekauft wurde (supplyCount pro Gegenstand).
   const supplyNeeds = status.supplyNeeds || {};
+  const supplyCount = status.supplyCount || {};
+
+  const usersForItem = (name) => {
+    const defined = itemUsers[name];
+    const valid = defined && defined.length ? defined.filter((u) => people.includes(u)) : people;
+    return valid.length ? valid : people;
+  };
+  const buyerForItem = (i) => {
+    const pool0 = usersForItem(items[i]);
+    const presentPool = pool0.filter((u) => presentPeople.includes(u));
+    const pool = presentPool.length ? presentPool : pool0;
+    if (!pool.length) return null;
+    const c = supplyCount[i] || 0;
+    return pool[((c % pool.length) + pool.length) % pool.length];
+  };
+
   const neededItems = items
     .map((item, i) => ({ item, i, level: supplyNeeds[i] }))
-    .filter((x) => x.level);
-  const supplyTurn = status.supplyTurn || 0;
-  const buyerPool = presentPeople.length > 0 ? presentPeople : people;
-  const buyerIdx = buyerPool.length > 0 ? (((supplyTurn % buyerPool.length) + buyerPool.length) % buyerPool.length) : 0;
-  const currentBuyer = buyerPool[buyerIdx];
-  const nextBuyer = buyerPool[(buyerIdx + 1) % buyerPool.length];
+    .filter((x) => x.level)
+    .map((x) => ({ ...x, buyer: buyerForItem(x.i) }));
+
+  // Nach Käufer gruppieren, damit man sieht "🛒 Hannes kauft: A, B".
+  const neededByBuyer = [];
+  neededItems.forEach((it) => {
+    let g = neededByBuyer.find((x) => x.buyer === it.buyer);
+    if (!g) { g = { buyer: it.buyer, items: [] }; neededByBuyer.push(g); }
+    g.items.push(it);
+  });
 
   // Cleaning rotation (weekly, Fri-Sun)
   const fridayDate = addDays(anchorFriday, effWeekIndex * 7);
@@ -576,7 +609,12 @@ export default function WGPlan() {
     save({ ...config, items: [...items, v] });
     setNewItem("");
   };
-  const removeItem = (idx) => save({ ...config, items: items.filter((_, i) => i !== idx) });
+  const removeItem = (idx) => {
+    const name = items[idx];
+    const nextItemUsers = { ...(config.itemUsers || {}) };
+    delete nextItemUsers[name];
+    save({ ...config, items: items.filter((_, i) => i !== idx), itemUsers: nextItemUsers });
+  };
 
   const addRoom = () => {
     const v = newRoom.trim();
@@ -1004,52 +1042,53 @@ export default function WGPlan() {
         {/* ===================== EINKAUF (bedarfsgesteuert) ===================== */}
         {activeTab === "supply" && (
           <>
-            {/* Wer ist als Nächstes dran */}
-            <div style={{ background: "#20241F", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
-              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
-                Als Nächstes einkaufen
-              </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 24, color: "#F1ECE0" }}>
-                  {currentBuyer || "—"}
-                </span>
-                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#9AA69C" }}>
-                  danach: {nextBuyer || "—"}
-                </span>
-              </div>
-            </div>
-
             {celebrateSupply && (
               <div className="celebrate-banner" style={{ textAlign: "center", background: "#C68B2C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
-                🎉 Eingekauft! Der Nächste ist dran.
+                🎉 Eingekauft!
               </div>
             )}
 
-            {/* Einkaufsliste (nur Gemeldetes) */}
+            {/* Einkaufsliste (nur Gemeldetes), gruppiert nach Käufer */}
             <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 12px" }}>
               Zu kaufen{neededItems.length > 0 ? <span style={{ color: "#A5453B" }}> ({neededItems.length})</span> : null}
             </h2>
-            {neededItems.length > 0 ? (
-              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-                {neededItems.map(({ item, i, level }) => (
-                  <div key={i} style={cardBase}>
-                    <span style={{ fontSize: 16, fontWeight: 500 }}>{item}</span>
-                    <span style={{ background: level === "empty" ? "#A5453B" : "#C68B2C", color: "#FFFDF8", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
-                      {level === "empty" ? "leer" : "wird knapp"}
-                    </span>
+            {neededByBuyer.length > 0 ? (
+              <div style={{ display: "grid", gap: 14, marginBottom: 28 }}>
+                {neededByBuyer.map((group) => (
+                  <div key={group.buyer || "—"} style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#20241F", color: "#F1ECE0", padding: "10px 16px", fontWeight: 600, fontSize: 14 }}>
+                      🛒 <span style={{ fontFamily: "'Archivo Black', sans-serif" }}>{group.buyer || "—"}</span> kauft:
+                    </div>
+                    <div style={{ display: "grid" }}>
+                      {group.items.map(({ item, i, level }, k) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderTop: k === 0 ? "none" : "1px solid #EEE8DA" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                            <span style={{ fontSize: 16, fontWeight: 500 }}>{item}</span>
+                            <span style={{ background: level === "empty" ? "#A5453B" : "#C68B2C", color: "#FFFDF8", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
+                              {level === "empty" ? "leer" : "wird knapp"}
+                            </span>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              spawnConfettiBurst(e.clientX, e.clientY);
+                              if (neededItems.length === 1) setCelebrateSupply(true);
+                              markBought(i);
+                            }}
+                            className="stamp-btn"
+                            style={{ background: "#5A7A5C", color: "#FFFDF8", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
+                          >
+                            <CheckCircle2 size={16} /> gekauft
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <p style={{ fontSize: 14, color: "#6B7A6D", marginBottom: 16 }}>
+              <p style={{ fontSize: 14, color: "#6B7A6D", marginBottom: 28 }}>
                 Gerade muss nichts gekauft werden. 🎉
               </p>
-            )}
-
-            {neededItems.length > 0 && (
-              <button onClick={finishShopping} className="stamp-btn" style={{ background: "#5A7A5C", color: "#FFFDF8", border: "none", borderRadius: 10, padding: "13px 18px", cursor: "pointer", fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 28, width: "100%" }}>
-                <CheckCircle2 size={18} /> Hab eingekauft{nextBuyer ? ` — weiter an ${nextBuyer}` : ""}
-              </button>
             )}
 
             {/* Alle Vorräte + Bedarf melden */}
@@ -1060,40 +1099,73 @@ export default function WGPlan() {
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
               {items.map((item, i) => {
                 const level = supplyNeeds[i] || null;
+                const users = usersForItem(item);
+                const restricted = users.length < people.length;
                 return (
-                  <div key={i} style={{ ...cardBase, flexWrap: "wrap", rowGap: 10 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item}</span>
-                      {isAdmin && (
-                        <button onClick={() => removeItem(i)} aria-label={`${item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2 }}>
-                          <X size={14} />
-                        </button>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: "auto" }}>
-                      {SUPPLY_NEED_LEVELS.map((lv) => {
-                        const active = level === lv.key;
-                        return (
-                          <button
-                            key={lv.key}
-                            onClick={() => setNeed(i, active ? null : lv.key)}
-                            aria-pressed={active}
-                            style={{
-                              border: `1.5px solid ${active ? lv.bg : "#DDD6C4"}`,
-                              background: active ? lv.bg : "#FFFFFF",
-                              color: active ? "#FFFDF8" : "#8A8270",
-                              borderRadius: 999, padding: "8px 13px", cursor: "pointer",
-                              fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
-                            }}
-                          >
-                            {lv.label}
+                  <div key={i} style={{ ...cardBase, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                          <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item}</span>
+                          {restricted && (
+                            <span style={{ fontSize: 12, color: "#8A8270" }}>nutzen: {users.join(", ")}</span>
+                          )}
+                        </div>
+                        {isAdmin && (
+                          <button onClick={() => removeItem(i)} aria-label={`${item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2, flexShrink: 0 }}>
+                            <X size={14} />
                           </button>
-                        );
-                      })}
+                        )}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: "auto" }}>
+                        {SUPPLY_NEED_LEVELS.map((lv) => {
+                          const active = level === lv.key;
+                          return (
+                            <button
+                              key={lv.key}
+                              onClick={() => setNeed(i, active ? null : lv.key)}
+                              aria-pressed={active}
+                              style={{
+                                border: `1.5px solid ${active ? lv.bg : "#DDD6C4"}`,
+                                background: active ? lv.bg : "#FFFFFF",
+                                color: active ? "#FFFDF8" : "#8A8270",
+                                borderRadius: 999, padding: "8px 13px", cursor: "pointer",
+                                fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                              }}
+                            >
+                              {lv.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+                    {isAdmin && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderTop: "1px solid #EEE8DA", paddingTop: 10 }}>
+                        <span style={{ fontSize: 11, color: "#9A9280", fontWeight: 600, letterSpacing: "0.04em", marginRight: 2 }}>WER NUTZT DAS?</span>
+                        {people.map((p) => {
+                          const on = users.includes(p);
+                          return (
+                            <button
+                              key={p}
+                              onClick={() => toggleItemUser(item, p)}
+                              aria-pressed={on}
+                              style={{
+                                border: `1.5px solid ${on ? "#3E5C76" : "#DDD6C4"}`,
+                                background: on ? "#3E5C76" : "#FFFFFF",
+                                color: on ? "#FFFDF8" : "#9A9280",
+                                borderRadius: 999, padding: "5px 11px", cursor: "pointer",
+                                fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                              }}
+                            >
+                              {p}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 );
               })}
