@@ -737,6 +737,9 @@ export default function WGPlan() {
         body { margin: 0; }
         .stamp-btn { transition: transform 0.15s ease; }
         .stamp-btn:hover { transform: translateY(-2px); }
+        .buy-btn { transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease; }
+        .buy-btn:hover { background: #5A7A5C; color: #FFFDF8; }
+        .buy-btn:active { background: #4C684E; color: #FFFDF8; }
         .stamp-btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
           outline: 3px solid #C68B2C;
           outline-offset: 2px;
@@ -1074,10 +1077,11 @@ export default function WGPlan() {
                               if (neededItems.length === 1) setCelebrateSupply(true);
                               markBought(i);
                             }}
-                            className="stamp-btn"
-                            style={{ background: "#5A7A5C", color: "#FFFDF8", border: "none", borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
+                            className="stamp-btn buy-btn"
+                            title="Antippen, wenn gekauft"
+                            style={{ background: "#FFFFFF", color: "#5A7A5C", border: "1.5px solid #5A7A5C", borderRadius: 8, padding: "8px 13px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
                           >
-                            <CheckCircle2 size={16} /> gekauft
+                            <Circle size={16} /> gekauft
                           </button>
                         </div>
                       ))}
