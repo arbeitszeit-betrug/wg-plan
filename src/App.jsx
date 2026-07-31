@@ -1045,6 +1045,15 @@ export default function WGPlan() {
         {/* ===================== EINKAUF (bedarfsgesteuert) ===================== */}
         {activeTab === "supply" && (
           <>
+            <div style={{ display: "flex", gap: 10, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+              <Lightbulb size={18} color="#C68B2C" style={{ flexShrink: 0, marginTop: 1 }} />
+              <p style={{ fontSize: 13, color: "#6B7A6D", margin: 0, lineHeight: 1.5 }}>
+                Jedes Produkt rotiert <b>einzeln</b> — reihum unter den Mitbewohner, die es nutzen.
+                Wer als Nächstes dran ist, wechselt erst beim tatsächlichen Kauf. Meldet einfach an,
+                was knapp oder leer ist.
+              </p>
+            </div>
+
             {celebrateSupply && (
               <div className="celebrate-banner" style={{ textAlign: "center", background: "#C68B2C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
                 🎉 Eingekauft!
