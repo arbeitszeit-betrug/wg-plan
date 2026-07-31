@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { ref, onValue, set as dbSet, push, remove as dbRemove } from "firebase/database";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
-import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History } from "lucide-react";
+import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History, Download } from "lucide-react";
 
 const DEFAULT_PEOPLE = ["Hannes", "Mareike", "Mirko"];
 const DEFAULT_ITEMS = ["Klopapier", "WC-Reiniger", "Spülmittel", "Müllbeutel"];
@@ -200,6 +200,14 @@ export default function WGPlan() {
   const [suggestions, setSuggestions] = useState({});
   const [suggestionText, setSuggestionText] = useState("");
 
+  // PWA-Installation ("Als App installieren")
+  const [installEvt, setInstallEvt] = useState(null);
+  const [installed, setInstalled] = useState(false);
+  const [showInstallHint, setShowInstallHint] = useState(false);
+  const [installDismissed, setInstallDismissed] = useState(() => {
+    try { return localStorage.getItem("wgplan-install-dismissed") === "1"; } catch { return false; }
+  });
+
   // Erledigt-Status (pro Woche/Monat, admin-only)
   const [status, setStatus] = useState({});
 
@@ -268,6 +276,24 @@ export default function WGPlan() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => setUser(u));
     return () => unsubscribe();
+  }, []);
+
+  // Install-Prompt einfangen: erlaubt später einen eigenen "Als App installieren"-Button.
+  useEffect(() => {
+    const onBeforeInstall = (e) => {
+      e.preventDefault();
+      setInstallEvt(e);
+    };
+    const onInstalled = () => {
+      setInstalled(true);
+      setInstallEvt(null);
+    };
+    window.addEventListener("beforeinstallprompt", onBeforeInstall);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
   }, []);
 
   useEffect(() => {
@@ -378,6 +404,25 @@ export default function WGPlan() {
   };
 
   const handleLogout = () => signOut(auth);
+
+  const handleInstall = async () => {
+    if (installEvt) {
+      installEvt.prompt();
+      try {
+        const { outcome } = await installEvt.userChoice;
+        if (outcome === "accepted") setInstalled(true);
+      } catch {}
+      setInstallEvt(null);
+    } else {
+      // Kein nativer Prompt verfügbar (z.B. iOS/Safari) → kurze Anleitung ein-/ausblenden.
+      setShowInstallHint((v) => !v);
+    }
+  };
+
+  const dismissInstall = () => {
+    setInstallDismissed(true);
+    try { localStorage.setItem("wgplan-install-dismissed", "1"); } catch {}
+  };
 
   const togglePresence = (name) => {
     const cur = config.away || [];
@@ -506,6 +551,11 @@ export default function WGPlan() {
   const itemUsers = config.itemUsers || {};
   const awayList = away || [];
   const presentPeople = people.filter((p) => !awayList.includes(p));
+
+  // PWA-Installierbarkeit: Button nur zeigen, wenn nicht schon als App gestartet/installiert.
+  const isStandalone = typeof window !== "undefined" && ((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true);
+  const isIos = typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+  const showInstallButton = !isStandalone && !installed && !installDismissed;
 
   // Welche Woche/welcher Monat als "aktuell" (Offset 0) gilt, wird aus dem echten Datum
   // bestimmt und wandert automatisch mit. Die Rotation (wer welchen Raum/Gegenstand hat)
@@ -845,6 +895,28 @@ export default function WGPlan() {
         <h1 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: "clamp(28px, 6vw, 42px)", margin: "6px 0 24px", lineHeight: 1.05 }}>
           Wer macht was?
         </h1>
+
+        {showInstallButton && (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={handleInstall} className="stamp-btn" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#C68B2C", color: "#20241F", border: "none", borderRadius: 10, padding: "13px 16px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+                <Download size={18} /> Als App installieren
+              </button>
+              <button onClick={dismissInstall} aria-label="Ausblenden" title="Ausblenden" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "0 12px", cursor: "pointer", color: "#8A8270", display: "flex", alignItems: "center" }}>
+                <X size={16} />
+              </button>
+            </div>
+            {showInstallHint && (
+              <div style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "12px 14px", marginTop: 8, fontSize: 13, color: "#6B7A6D", lineHeight: 1.55 }}>
+                {isIos ? (
+                  <>Tippe unten in <b>Safari</b> auf das <b>Teilen-Symbol</b> (Quadrat mit Pfeil nach oben) und dann auf <b>„Zum Home-Bildschirm"</b>.</>
+                ) : (
+                  <>Öffne das Browser-Menü (<b>⋮</b>) und wähle <b>„App installieren"</b> bzw. <b>„Zum Startbildschirm hinzufügen"</b>.</>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {!isAdmin && showLogin && (
           <div style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, padding: 16, marginBottom: 24, display: "grid", gap: 8 }}>
