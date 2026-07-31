@@ -22,6 +22,12 @@ const MONTHLY_EXTRA_TASKS = {
 };
 const EXTRA_TASK_INTERVAL_WEEKS = 4;
 
+// Bedarf-Stufen für den Einkauf (null = genug da). Reihenfolge = Anzeige-Reihenfolge.
+const SUPPLY_NEED_LEVELS = [
+  { key: "low", label: "wird knapp", bg: "#C68B2C" },
+  { key: "empty", label: "leer", bg: "#A5453B" },
+];
+
 const MONTH_NAMES = [
   "Januar", "Februar", "März", "April", "Mai", "Juni",
   "Juli", "August", "September", "Oktober", "November", "Dezember"
@@ -345,20 +351,8 @@ export default function WGPlan() {
     prevCleaningCompleteRef.current = complete;
   }, [safeDoneCleaningCount, safePresentLen, weekOffset]);
 
-  const safeEffMonthOffset = config ? (totalMonths(todayYM()) - totalMonths(config.startMonth) + monthOffset) : 0;
-  const safeMonthKey = config ? `${monthIndexFromStart(config.startMonth, safeEffMonthOffset).y}-${String(monthIndexFromStart(config.startMonth, safeEffMonthOffset).m + 1).padStart(2, "0")}` : null;
-  const safeDoneSupplyCount = config && safeMonthKey
-    ? config.items.filter((_, i) => status.supply?.[safeMonthKey]?.[i]).length
-    : 0;
-  const safeItemsLen = config ? config.items.length : 0;
-
-  useEffect(() => {
-    const complete = safeItemsLen > 0 && safeDoneSupplyCount === safeItemsLen;
-    if (monthOffset === 0 && prevSupplyCompleteRef.current !== null && !prevSupplyCompleteRef.current && complete) {
-      setCelebrateSupply(true);
-    }
-    prevSupplyCompleteRef.current = complete;
-  }, [safeDoneSupplyCount, safeItemsLen, monthOffset]);
+  // Einkauf-Feier wird direkt beim "Hab eingekauft"-Klick ausgelöst (siehe finishShopping),
+  // nicht mehr aus einem Monats-Erledigt-Zähler.
 
   const save = async (next) => {
     setConfig(next);
@@ -407,8 +401,18 @@ export default function WGPlan() {
     dbSet(ref(db, `${STATUS_PATH}/cleaning/${weekKey}/${idx}`), !current);
   };
 
-  const toggleSupplyDone = (monthKey, idx, current) => {
-    dbSet(ref(db, `${STATUS_PATH}/supply/${monthKey}/${idx}`), !current);
+  // Bedarf pro Gegenstand melden: null = genug da, "low" = wird knapp, "empty" = leer.
+  const setNeed = (idx, level) => {
+    const path = `${STATUS_PATH}/supplyNeeds/${idx}`;
+    if (!level) dbRemove(ref(db, path));
+    else dbSet(ref(db, path), level);
+  };
+
+  // "Hab eingekauft": alle Meldungen zurücksetzen und den Einkauf an den Nächsten weitergeben.
+  const finishShopping = () => {
+    dbRemove(ref(db, `${STATUS_PATH}/supplyNeeds`));
+    dbSet(ref(db, `${STATUS_PATH}/supplyTurn`), (status.supplyTurn || 0) + 1);
+    setCelebrateSupply(true);
   };
 
   const CONFETTI_COLORS = ["#C68B2C", "#3E5C76", "#5A7A5C", "#A5453B", "#9A6B1F"];
@@ -499,15 +503,19 @@ export default function WGPlan() {
   const effWeekIndex = weeksFromAnchor + weekOffset;
   const effMonthOffset = currentMonthOffset + monthOffset;
 
-  // Supply rotation (monthly)
-  const { y: supplyY, m: supplyM, label: monthLabel } = monthIndexFromStart(startMonth, effMonthOffset);
-  const monthKey = `${supplyY}-${String(supplyM + 1).padStart(2, "0")}`;
-  const supplyAssignments = items.map((item, i) => {
-    const personIdx = (((effMonthOffset + i) % people.length) + people.length) % people.length;
-    return { item, person: people[personIdx] };
-  });
-  const doneSupply = status.supply?.[monthKey] || {};
-  const doneSupplyCount = items.filter((_, i) => doneSupply[i]).length;
+  // Einkauf: bedarfsgesteuert statt fester Monats-Zuweisung.
+  // Jeder Gegenstand hat einen Bedarf-Status (null/genug, "low"/knapp, "empty"/leer),
+  // den alle setzen können. Nur Gemeldetes muss gekauft werden. Ein rotierender Zeiger
+  // (supplyTurn) bestimmt, wer als Nächstes einkaufen ist — über die anwesenden Personen.
+  const supplyNeeds = status.supplyNeeds || {};
+  const neededItems = items
+    .map((item, i) => ({ item, i, level: supplyNeeds[i] }))
+    .filter((x) => x.level);
+  const supplyTurn = status.supplyTurn || 0;
+  const buyerPool = presentPeople.length > 0 ? presentPeople : people;
+  const buyerIdx = buyerPool.length > 0 ? (((supplyTurn % buyerPool.length) + buyerPool.length) % buyerPool.length) : 0;
+  const currentBuyer = buyerPool[buyerIdx];
+  const nextBuyer = buyerPool[(buyerIdx + 1) % buyerPool.length];
 
   // Cleaning rotation (weekly, Fri-Sun)
   const fridayDate = addDays(anchorFriday, effWeekIndex * 7);
@@ -559,19 +567,6 @@ export default function WGPlan() {
       label: `${fmtDDMM(fd)}–${fmtDDMM(addDays(anchorFriday, wi * 7 + 2))}`,
       done: people.filter((_, i) => doneMap[i]).length,
       total: people.length,
-    };
-  });
-
-  const supplyHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
-    const offset = currentMonthOffset - idx;
-    const { y, m, label } = monthIndexFromStart(startMonth, offset);
-    const key = `${y}-${String(m + 1).padStart(2, "0")}`;
-    const doneMap = status.supply?.[key] || {};
-    return {
-      key,
-      label,
-      done: items.filter((_, i) => doneMap[i]).length,
-      total: items.length,
     };
   });
 
@@ -640,41 +635,6 @@ export default function WGPlan() {
     downloadICS("wochenputz-12wochen.ics", events);
   };
 
-  const exportSupplyMonth = () => {
-    const [sy, sm] = startMonth.split("-").map(Number);
-    const total = sy * 12 + (sm - 1) + effMonthOffset;
-    const y = Math.floor(total / 12), m = total % 12;
-    const start = new Date(y, m, 1);
-    const end = new Date(y, m + 1, 1);
-    downloadICS("einkaufsplan.ics", [{
-      uid: `einkauf-${icsDate(start)}@wg-plan`,
-      startDate: start,
-      endDateExclusive: end,
-      summary: `Einkauf: ${supplyAssignments.map(a => `${a.item}–${a.person}`).join(", ")}`,
-      description: supplyAssignments.map(a => `${a.item}: ${a.person}`).join("\n"),
-    }]);
-  };
-
-  const exportSupplyRange = (months = 12) => {
-    const [sy, sm] = startMonth.split("-").map(Number);
-    const events = [];
-    for (let mo = 0; mo < months; mo++) {
-      const emo = currentMonthOffset + mo;
-      const total = sy * 12 + (sm - 1) + emo;
-      const y = Math.floor(total / 12), m = total % 12;
-      const start = new Date(y, m, 1);
-      const end = new Date(y, m + 1, 1);
-      const assigns = items.map((item, i) => ({ item, person: people[(((emo + i) % people.length) + people.length) % people.length] }));
-      events.push({
-        uid: `einkauf-${icsDate(start)}@wg-plan`,
-        startDate: start,
-        endDateExclusive: end,
-        summary: `Einkauf: ${assigns.map(a => `${a.item}–${a.person}`).join(", ")}`,
-        description: assigns.map(a => `${a.item}: ${a.person}`).join("\n"),
-      });
-    }
-    downloadICS("einkaufsplan-12monate.ics", events);
-  };
 
   const cardBase = {
     background: "#FFFFFF",
@@ -1041,60 +1001,98 @@ export default function WGPlan() {
           </>
         )}
 
-        {/* ===================== EINKAUFSPLAN (monthly) ===================== */}
+        {/* ===================== EINKAUF (bedarfsgesteuert) ===================== */}
         {activeTab === "supply" && (
           <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
-              <button onClick={() => setMonthOffset(o => o - 1)} aria-label="Vorheriger Monat" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-                <ChevronLeft size={20} />
-              </button>
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
-                {monthLabel}
-              </span>
-              <button onClick={() => setMonthOffset(o => o + 1)} aria-label="Nächster Monat" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
-                <ChevronRight size={20} />
-              </button>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              {monthOffset !== 0 ? (
-                <button onClick={() => setMonthOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
-                  zurück zum aktuellen Monat
-                </button>
-              ) : <span />}
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneSupplyCount === items.length ? "#5A7A5C" : "#8A8270" }}>
-                {doneSupplyCount}/{items.length} erledigt
-              </span>
+            {/* Wer ist als Nächstes dran */}
+            <div style={{ background: "#20241F", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
+              <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
+                Als Nächstes einkaufen
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 24, color: "#F1ECE0" }}>
+                  {currentBuyer || "—"}
+                </span>
+                <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#9AA69C" }}>
+                  danach: {nextBuyer || "—"}
+                </span>
+              </div>
             </div>
 
             {celebrateSupply && (
               <div className="celebrate-banner" style={{ textAlign: "center", background: "#C68B2C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
-                🎉 Diesen Monat alles besorgt!
+                🎉 Eingekauft! Der Nächste ist dran.
               </div>
             )}
 
+            {/* Einkaufsliste (nur Gemeldetes) */}
+            <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 12px" }}>
+              Zu kaufen{neededItems.length > 0 ? <span style={{ color: "#A5453B" }}> ({neededItems.length})</span> : null}
+            </h2>
+            {neededItems.length > 0 ? (
+              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+                {neededItems.map(({ item, i, level }) => (
+                  <div key={i} style={cardBase}>
+                    <span style={{ fontSize: 16, fontWeight: 500 }}>{item}</span>
+                    <span style={{ background: level === "empty" ? "#A5453B" : "#C68B2C", color: "#FFFDF8", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
+                      {level === "empty" ? "leer" : "wird knapp"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ fontSize: 14, color: "#6B7A6D", marginBottom: 16 }}>
+                Gerade muss nichts gekauft werden. 🎉
+              </p>
+            )}
+
+            {neededItems.length > 0 && (
+              <button onClick={finishShopping} className="stamp-btn" style={{ background: "#5A7A5C", color: "#FFFDF8", border: "none", borderRadius: 10, padding: "13px 18px", cursor: "pointer", fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 28, width: "100%" }}>
+                <CheckCircle2 size={18} /> Hab eingekauft{nextBuyer ? ` — weiter an ${nextBuyer}` : ""}
+              </button>
+            )}
+
+            {/* Alle Vorräte + Bedarf melden */}
+            <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 4px" }}>Vorräte</h2>
+            <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+              Tippt an, was zur Neige geht — nur das landet oben auf der Einkaufsliste.
+            </p>
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-              {supplyAssignments.map((a, i) => {
-                const done = !!doneSupply[i];
+              {items.map((item, i) => {
+                const level = supplyNeeds[i] || null;
                 return (
-                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1 }}>
+                  <div key={i} style={{ ...cardBase, flexWrap: "wrap", rowGap: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
                       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
                         {String(i + 1).padStart(2, "0")}
                       </span>
-                      <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: done ? "line-through" : "none" }}>
-                        {a.item}
-                      </span>
+                      <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item}</span>
                       {isAdmin && (
-                        <button onClick={() => removeItem(i)} aria-label={`${a.item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2 }}>
+                        <button onClick={() => removeItem(i)} aria-label={`${item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2 }}>
                           <X size={14} />
                         </button>
                       )}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-                      <span style={{ background: "#C68B2C", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
-                        {a.person}
-                      </span>
-                      {doneToggleBtn(done, () => toggleSupplyDone(monthKey, i, done))}
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0, marginLeft: "auto" }}>
+                      {SUPPLY_NEED_LEVELS.map((lv) => {
+                        const active = level === lv.key;
+                        return (
+                          <button
+                            key={lv.key}
+                            onClick={() => setNeed(i, active ? null : lv.key)}
+                            aria-pressed={active}
+                            style={{
+                              border: `1.5px solid ${active ? lv.bg : "#DDD6C4"}`,
+                              background: active ? lv.bg : "#FFFFFF",
+                              color: active ? "#FFFDF8" : "#8A8270",
+                              borderRadius: 999, padding: "8px 13px", cursor: "pointer",
+                              fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                            }}
+                          >
+                            {lv.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -1113,29 +1111,6 @@ export default function WGPlan() {
                 <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
                   <Plus size={18} />
                 </button>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-              <button onClick={exportSupplyMonth} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                <CalendarPlus size={15} /> Diesen Monat in Kalender
-              </button>
-              <button onClick={() => exportSupplyRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                <CalendarPlus size={15} /> Nächste 12 Monate
-              </button>
-            </div>
-
-            <button onClick={() => setShowSupplyHistory(v => !v)} style={{ ...toggleBtnStyle, marginBottom: 10 }}>
-              <History size={14} /> Verlauf {showSupplyHistory ? "▲" : "▼"}
-            </button>
-            {showSupplyHistory && (
-              <div style={{ display: "grid", gap: 8, marginBottom: 40 }}>
-                {supplyHistory.map(h => (
-                  <div key={h.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "8px 14px", fontSize: 13 }}>
-                    <span>{h.label}</span>
-                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: h.done === h.total ? "#5A7A5C" : "#8A8270" }}>{h.done}/{h.total} erledigt</span>
-                  </div>
-                ))}
               </div>
             )}
           </>
@@ -1318,9 +1293,9 @@ export default function WGPlan() {
 
         <p style={{ fontSize: 12, color: "#9A9280", marginTop: 20, lineHeight: 1.6 }}>
           Die Liste wird geteilt gespeichert — öffnet jeder Mitbewohner diesen Link, sieht er denselben Stand.
-          Putzplan rotiert wöchentlich (Fr–So), Einkaufsplan monatlich — beides automatisch. Über die Kalender-Buttons
-          lädt sich jeder eine .ics-Datei herunter und kann sie in Google Kalender, Apple Kalender o.ä. importieren.
-          Neue Gegenstände oder Räume könnt ihr über "Vorschläge" einreichen.
+          Putzplan rotiert wöchentlich (Fr–So) automatisch. Beim Einkauf meldet jeder, was zur Neige geht;
+          gekauft wird nur, was gemeldet ist, und wer einkauft wechselt reihum. Über die Kalender-Buttons
+          im Putzplan lädt sich jeder eine .ics-Datei herunter. Neue Gegenstände oder Räume könnt ihr über "Vorschläge" einreichen.
         </p>
       </div>
 

@@ -1,7 +1,13 @@
 # WG-Plan
 
-Wochenputz- und Einkaufs-Rotationsplan für die WG. React + Vite, gehostet auf GitHub Pages,
-geteilter Speicher über Firebase Realtime Database (Live-Sync zwischen allen Mitbewohner).
+Wochenputz-Rotationsplan (Fr–So) + bedarfsgesteuerter Einkauf für die WG. React + Vite,
+gehostet auf GitHub Pages, geteilter Speicher über Firebase Realtime Database (Live-Sync
+zwischen allen Mitbewohner).
+
+Beim Putzplan: sind nur 2 Mitbewohner anwesend, macht die Bad-Person automatisch auch den
+Flur (Admin stellt über "Wer ist gerade da?" ein, wer da ist). Beim Einkauf gibt es keine
+feste Zuweisung mehr — jeder meldet pro Gegenstand "wird knapp"/"leer", gekauft wird nur
+Gemeldetes, und wer als Nächstes einkauft wechselt reihum ("Hab eingekauft"-Button).
 
 Nur der Admin-Account (E-Mail/Passwort-Login über das Schloss-Symbol) kann Personen, Räume
 und Gegenstände bearbeiten. Aufgaben als erledigt markieren können alle, auch ohne Login —
