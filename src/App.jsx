@@ -157,6 +157,8 @@ function defaultConfig() {
     rooms: DEFAULT_ROOMS,
     anchorFriday: anchor,
     extraTaskAnchor: isoDate(addDays(anchor, 7)),
+    away: [],
+    twoPersonAnchor: anchor,
   };
 }
 
@@ -231,10 +233,14 @@ export default function WGPlan() {
             rooms: data.rooms || DEFAULT_ROOMS,
             anchorFriday: resolvedAnchorFriday,
             extraTaskAnchor: data.extraTaskAnchor || isoDate(addDays(resolvedAnchorFriday, 7)),
+            away: data.away || [],
+            twoPersonAnchor: data.twoPersonAnchor || currentWindowFriday(),
           };
           setConfig(next);
-          if (!data.extraTaskAnchor) {
-            dbSet(configRef, next).catch(() => setSaveError(true));
+          if (!data.extraTaskAnchor || !data.twoPersonAnchor) {
+            // Best-effort-Migration fehlender Felder. Scheitert bei Nicht-Admins an den
+            // Firebase-Regeln — das ist ok und darf keinen Fehler-Hinweis auslösen.
+            dbSet(configRef, next).catch(() => {});
           }
         } else {
           const initial = defaultConfig();
@@ -325,18 +331,19 @@ export default function WGPlan() {
   const safeWeekKey = config
     ? isoDate(addDays(config.anchorFriday, (weeksBetweenDates(config.anchorFriday, new Date(currentWindowFriday() + "T00:00:00")) + weekOffset) * 7))
     : null;
+  const safePresentPeople = config ? config.people.filter((p) => !(config.away || []).includes(p)) : [];
   const safeDoneCleaningCount = config && safeWeekKey
-    ? config.people.filter((_, i) => status.cleaning?.[safeWeekKey]?.[i]).length
+    ? safePresentPeople.filter((_, i) => status.cleaning?.[safeWeekKey]?.[i]).length
     : 0;
-  const safePeopleLen = config ? config.people.length : 0;
+  const safePresentLen = safePresentPeople.length;
 
   useEffect(() => {
-    const complete = safePeopleLen > 0 && safeDoneCleaningCount === safePeopleLen;
+    const complete = safePresentLen > 0 && safeDoneCleaningCount === safePresentLen;
     if (weekOffset === 0 && prevCleaningCompleteRef.current !== null && !prevCleaningCompleteRef.current && complete) {
       setCelebrateCleaning(true);
     }
     prevCleaningCompleteRef.current = complete;
-  }, [safeDoneCleaningCount, safePeopleLen, weekOffset]);
+  }, [safeDoneCleaningCount, safePresentLen, weekOffset]);
 
   const safeEffMonthOffset = config ? (totalMonths(todayYM()) - totalMonths(config.startMonth) + monthOffset) : 0;
   const safeMonthKey = config ? `${monthIndexFromStart(config.startMonth, safeEffMonthOffset).y}-${String(monthIndexFromStart(config.startMonth, safeEffMonthOffset).m + 1).padStart(2, "0")}` : null;
@@ -375,6 +382,12 @@ export default function WGPlan() {
   };
 
   const handleLogout = () => signOut(auth);
+
+  const togglePresence = (name) => {
+    const cur = config.away || [];
+    const nextAway = cur.includes(name) ? cur.filter((n) => n !== name) : [...cur, name];
+    save({ ...config, away: nextAway });
+  };
 
   const addSuggestion = () => {
     const v = suggestionText.trim();
@@ -474,7 +487,9 @@ export default function WGPlan() {
     );
   }
 
-  const { people, items, startMonth, rooms, anchorFriday, extraTaskAnchor } = config;
+  const { people, items, startMonth, rooms, anchorFriday, extraTaskAnchor, away, twoPersonAnchor } = config;
+  const awayList = away || [];
+  const presentPeople = people.filter((p) => !awayList.includes(p));
 
   // Welche Woche/welcher Monat als "aktuell" (Offset 0) gilt, wird aus dem echten Datum
   // bestimmt und wandert automatisch mit. Die Rotation (wer welchen Raum/Gegenstand hat)
@@ -499,7 +514,7 @@ export default function WGPlan() {
   const sundayDate = addDays(anchorFriday, effWeekIndex * 7 + 2);
   const weekKey = isoDate(fridayDate);
   const doneCleaning = status.cleaning?.[weekKey] || {};
-  const doneCleaningCount = people.filter((_, i) => doneCleaning[i]).length;
+  const doneCleaningCount = presentPeople.filter((_, i) => doneCleaning[i]).length;
   const weekLabel = `${WEEKDAY_SHORT[5]} ${fmtDDMM(fridayDate)}–${WEEKDAY_SHORT[0]} ${fmtDDMMYYYY(sundayDate)}`;
 
   const isExtraTaskWeekFor = (fd) => {
@@ -507,14 +522,31 @@ export default function WGPlan() {
     return ((diff % EXTRA_TASK_INTERVAL_WEEKS) + EXTRA_TASK_INTERVAL_WEEKS) % EXTRA_TASK_INTERVAL_WEEKS === 0;
   };
   const isExtraTaskWeek = isExtraTaskWeekFor(fridayDate);
-  // Cleaning rotation (weekly, Fri-Sun) — people stay in fixed order, rooms rotate underneath them
-  const cleaningAssignments = people.map((person, p) => {
+
+  // Zwei-Personen-Modus: Sind genau 2 Mitbewohner anwesend und existieren die drei
+  // Standard-Räume, macht eine Person die Küche, die andere Bad + Flur (wechselt wöchentlich).
+  const twoPersonMode = presentPeople.length === 2 && rooms.includes("Küche") && rooms.includes("Bad") && rooms.includes("Flur");
+
+  // Cleaning rotation (weekly, Fri-Sun) — people stay in fixed order, rooms rotate underneath them.
+  // Jede Zuweisung: { person, rooms: [...], extraTasks: [...] } (eine Person kann mehrere Räume haben).
+  let cleaningAssignments;
+  if (twoPersonMode) {
+    const twoRot = weeksBetweenDates(twoPersonAnchor || anchorFriday, fridayDate);
+    const badPersonIdx = ((twoRot % 2) + 2) % 2; // wer diese Woche Bad + Flur macht
+    cleaningAssignments = presentPeople.map((person, i) => {
+      const roomList = i === badPersonIdx ? ["Bad", "Flur"] : ["Küche"];
+      const extraTasks = isExtraTaskWeek ? roomList.map((r) => MONTHLY_EXTRA_TASKS[r]).filter(Boolean) : [];
+      return { person, rooms: roomList, extraTasks };
+    });
+  } else {
     const n = rooms.length;
-    const roomIdx = ((((p - effWeekIndex) % n) + n) % n);
-    const room = rooms[roomIdx];
-    const extraTask = isExtraTaskWeek ? MONTHLY_EXTRA_TASKS[room] : undefined;
-    return { person, room, roomIdx, extraTask };
-  });
+    cleaningAssignments = presentPeople.map((person, p) => {
+      const roomIdx = ((((p - effWeekIndex) % n) + n) % n);
+      const room = rooms[roomIdx];
+      const extraTasks = isExtraTaskWeek && MONTHLY_EXTRA_TASKS[room] ? [MONTHLY_EXTRA_TASKS[room]] : [];
+      return { person, rooms: [room], extraTasks };
+    });
+  }
 
   // Verlauf: letzte HISTORY_LENGTH Wochen/Monate relativ zur echten aktuellen Woche/Monat
   const cleaningHistory = Array.from({ length: HISTORY_LENGTH }, (_, idx) => {
@@ -571,14 +603,14 @@ export default function WGPlan() {
   };
 
   const exportCleaningWeek = () => {
-    const desc = cleaningAssignments.map(a => `${a.person}: ${a.room}${a.extraTask ? ` (+ ${a.extraTask})` : ""}`).join("\n");
+    const desc = cleaningAssignments.map(a => `${a.person}: ${a.rooms.join(" + ")}${a.extraTasks.length ? ` (+ ${a.extraTasks.join(", ")})` : ""}`).join("\n");
     const start = fridayDate;
     const end = addDays(anchorFriday, effWeekIndex * 7 + 3); // exclusive end = Monday
     downloadICS("wochenputz.ics", [{
       uid: `putz-${icsDate(start)}@wg-plan`,
       startDate: start,
       endDateExclusive: end,
-      summary: `Wochenputz: ${cleaningAssignments.map(a => `${a.person}–${a.room}`).join(", ")}`,
+      summary: `Wochenputz: ${cleaningAssignments.map(a => `${a.person}–${a.rooms.join("/")}`).join(", ")}`,
       description: desc,
     }]);
   };
@@ -879,10 +911,16 @@ export default function WGPlan() {
                   zurück zur aktuellen Woche
                 </button>
               ) : <span />}
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneCleaningCount === people.length ? "#5A7A5C" : "#8A8270" }}>
-                {doneCleaningCount}/{people.length} erledigt
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneCleaningCount === presentPeople.length ? "#5A7A5C" : "#8A8270" }}>
+                {doneCleaningCount}/{presentPeople.length} erledigt
               </span>
             </div>
+
+            {awayList.length > 0 && (
+              <p style={{ fontSize: 12, color: "#8A8270", margin: "0 0 12px", fontStyle: "italic" }}>
+                Gerade nicht da: {awayList.join(", ")}{twoPersonMode ? " · 2-Personen-Modus: Bad-Person macht auch den Flur" : ""}
+              </p>
+            )}
 
             {celebrateCleaning && (
               <div className="celebrate-banner" style={{ textAlign: "center", background: "#5A7A5C", color: "#FFFDF8", borderRadius: 10, padding: "8px 14px", marginBottom: 16, fontWeight: 700, fontSize: 14 }}>
@@ -893,23 +931,26 @@ export default function WGPlan() {
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
               {cleaningAssignments.map((a, i) => {
                 const done = !!doneCleaning[i];
+                const hasExtra = a.extraTasks.length > 0;
                 return (
-                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1, alignItems: a.extraTask ? "flex-start" : "center" }}>
-                    <div style={{ display: "flex", alignItems: a.extraTask ? "flex-start" : "center", gap: 12, minWidth: 0 }}>
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0, marginTop: a.extraTask ? 2 : 0 }}>
+                  <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1, alignItems: hasExtra ? "flex-start" : "center" }}>
+                    <div style={{ display: "flex", alignItems: hasExtra ? "flex-start" : "center", gap: 12, minWidth: 0 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0, marginTop: hasExtra ? 2 : 0 }}>
                         {String(i + 1).padStart(2, "0")}
                       </span>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                         <span style={{ fontSize: 16, fontWeight: 500, textDecoration: done ? "line-through" : "none" }}>{a.person}</span>
-                        {a.extraTask && (
-                          <span style={{ fontSize: 12, color: "#9A6B1F", fontWeight: 600 }}>+ {a.extraTask}</span>
-                        )}
+                        {a.extraTasks.map((t, k) => (
+                          <span key={k} style={{ fontSize: 12, color: "#9A6B1F", fontWeight: 600 }}>+ {t}</span>
+                        ))}
                       </div>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-                      <span style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
-                        {a.room}
-                      </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {a.rooms.map((room, k) => (
+                        <span key={k} style={{ background: "#3E5C76", color: "#FFFDF8", fontFamily: "'Archivo Black', sans-serif", fontSize: 13, padding: "6px 12px", borderRadius: 999, whiteSpace: "nowrap" }}>
+                          {room}
+                        </span>
+                      ))}
                       {doneToggleBtn(done, () => toggleCleaningDone(weekKey, i, done))}
                     </div>
                   </div>
@@ -941,6 +982,37 @@ export default function WGPlan() {
                 <button onClick={addRoom} className="stamp-btn" style={{ background: "#3E5C76", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
                   <Plus size={18} />
                 </button>
+              </div>
+            )}
+
+            {isAdmin && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ ...toggleBtnStyle, marginBottom: 10, cursor: "default" }}>
+                  <Users size={14} /> Wer ist gerade da?
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {people.map((p, i) => {
+                    const isAway = awayList.includes(p);
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => togglePresence(p)}
+                        style={{
+                          border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "8px 14px", cursor: "pointer",
+                          fontSize: 13, fontWeight: 600,
+                          background: isAway ? "#FFFFFF" : "#5A7A5C",
+                          color: isAway ? "#9A9280" : "#FFFDF8",
+                          textDecoration: isAway ? "line-through" : "none",
+                        }}
+                      >
+                        {p}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p style={{ fontSize: 12, color: "#9A9280", margin: "8px 0 0", lineHeight: 1.5 }}>
+                  Grün = anwesend. Sind nur 2 anwesend, macht die Bad-Person automatisch auch den Flur.
+                </p>
               </div>
             )}
 
