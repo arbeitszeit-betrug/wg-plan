@@ -13,6 +13,45 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="WG-Plan" />
     <title>WG-Plan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #F1ECE0;
+        --surface: #FFFFFF;
+        --panel: #20241F;
+        --text: #20241F;
+        --on-dark: #F1ECE0;
+        --border: #DDD6C4;
+        --muted: #6B7A6D;
+        --muted2: #8A8270;
+        --faint: #B9AF97;
+        --divider: #EEE8DA;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #16180F;
+        --surface: #20241B;
+        --panel: #0E100A;
+        --text: #ECE7D8;
+        --on-dark: #ECE7D8;
+        --border: #363B2E;
+        --muted: #9AA294;
+        --muted2: #868C78;
+        --faint: #5F6553;
+        --divider: #2A2E22;
+      }
+      html, body { background: var(--bg); }
+    </style>
+    <script>
+      // Theme vor dem ersten Paint setzen, damit nichts kurz hell aufblitzt.
+      (function () {
+        try {
+          var s = localStorage.getItem("wgplan-theme");
+          var dark = s ? s === "dark" : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

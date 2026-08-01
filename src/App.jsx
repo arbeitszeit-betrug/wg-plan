@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { ref, onValue, set as dbSet, push, remove as dbRemove } from "firebase/database";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { db, auth } from "./firebase";
-import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History, Download } from "lucide-react";
+import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History, Download, ListChecks, Moon, Sun } from "lucide-react";
 
 const DEFAULT_PEOPLE = ["Hannes", "Mareike", "Mirko"];
 const DEFAULT_ITEMS = ["Klopapier", "WC-Reiniger", "Spülmittel", "Müllbeutel"];
@@ -11,6 +11,7 @@ const CONFIG_PATH = "wg-plan-config";
 const SUGGESTIONS_PATH = "wg-plan-suggestions";
 const STATUS_PATH = "wg-plan-status";
 const MEETING_PATH = "wg-plan-meeting";
+const TASKS_PATH = "wg-plan-tasks";
 const DEFAULT_MEETING_INFO = { date: "", time: "18:00", place: "in der WG" };
 const WEEKDAY_FULL = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
 const HISTORY_LENGTH = 6;
@@ -172,6 +173,7 @@ function defaultConfig() {
 const TABS = [
   { key: "cleaning", label: "Putzplan", icon: Sparkles },
   { key: "supply", label: "Einkauf", icon: Package },
+  { key: "tasks", label: "Aufgaben", icon: ListChecks },
   { key: "meeting", label: "WG-Gruppe", icon: Users },
 ];
 
@@ -199,6 +201,20 @@ export default function WGPlan() {
   // Vorschläge
   const [suggestions, setSuggestions] = useState({});
   const [suggestionText, setSuggestionText] = useState("");
+
+  // Aufgaben-Board (einmalige To-dos neben der Rotation)
+  const [tasks, setTasks] = useState({});
+  const [taskText, setTaskText] = useState("");
+  const [taskAssignee, setTaskAssignee] = useState("");
+
+  // Dark Mode
+  const [dark, setDark] = useState(() => {
+    try {
+      const s = localStorage.getItem("wgplan-theme");
+      if (s) return s === "dark";
+    } catch {}
+    return typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  });
 
   // PWA-Installation ("Als App installieren")
   const [installEvt, setInstallEvt] = useState(null);
@@ -332,6 +348,22 @@ export default function WGPlan() {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const tasksRef = ref(db, TASKS_PATH);
+    const unsubscribe = onValue(tasksRef, (snapshot) => {
+      setTasks(snapshot.val() || {});
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Dark Mode auf <html> anwenden (setzt die CSS-Variablen um) + Statusleisten-Farbe.
+  useEffect(() => {
+    try { localStorage.setItem("wgplan-theme", dark ? "dark" : "light"); } catch {}
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dark ? "#15170f" : "#1f231e");
+  }, [dark]);
 
   // Feier-Nebeneffekte (Konfetti-Regen + Auto-Ausblenden) laufen sauber in Effects,
   // ausgelöst durch celebrateCleaning/celebrateSupply — nicht während des Renderns selbst.
@@ -533,9 +565,24 @@ export default function WGPlan() {
     dbRemove(ref(db, `${MEETING_PATH}/notes/${id}`));
   };
 
+  const addTask = () => {
+    const v = taskText.trim();
+    if (!v) return;
+    push(ref(db, TASKS_PATH), {
+      text: v,
+      assignee: taskAssignee || null,
+      done: false,
+      createdAt: Date.now(),
+    });
+    setTaskText("");
+    setTaskAssignee("");
+  };
+  const toggleTask = (id, done) => dbSet(ref(db, `${TASKS_PATH}/${id}/done`), !done);
+  const removeTask = (id) => dbRemove(ref(db, `${TASKS_PATH}/${id}`));
+
   if (loading || !config) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center", background: "#F1ECE0", fontFamily: "'Work Sans', sans-serif", color: "#34404A" }}>
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center", background: "var(--bg)", fontFamily: "'Work Sans', sans-serif", color: "#34404A" }}>
         <style>{`
           @keyframes float-package { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
           .floaty { animation: float-package 1.1s ease-in-out infinite; }
@@ -725,8 +772,8 @@ export default function WGPlan() {
 
 
   const cardBase = {
-    background: "#FFFFFF",
-    border: "1.5px solid #DDD6C4",
+    background: "var(--surface)",
+    border: "1.5px solid var(--border)",
     borderRadius: 12,
     padding: "14px 18px",
     display: "flex",
@@ -735,12 +782,18 @@ export default function WGPlan() {
     gap: 12,
   };
 
-  const inputStyle = { flex: 1, padding: "12px 14px", borderRadius: 10, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 15 };
+  const inputStyle = { flex: 1, padding: "12px 14px", borderRadius: 10, border: "1.5px solid var(--border)", background: "var(--surface)", fontSize: 15 };
 
-  const toggleBtnStyle = { background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 };
+  const toggleBtnStyle = { background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--muted)", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 };
 
   const suggestionList = Object.entries(suggestions).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
   const noteList = Object.entries(meetingNotes).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
+  const taskList = Object.entries(tasks).sort((a, b) => {
+    // Offene zuerst, dann nach Erstellzeit
+    if (!!a[1].done !== !!b[1].done) return a[1].done ? 1 : -1;
+    return (a[1].createdAt || 0) - (b[1].createdAt || 0);
+  });
+  const openTaskCount = taskList.filter(([, t]) => !t.done).length;
 
   const exportMeeting = () => {
     if (!meetingInfo.date) return;
@@ -768,7 +821,7 @@ export default function WGPlan() {
         onClick();
       }}
       aria-label={done ? "als nicht erledigt markieren" : "als erledigt markieren"}
-      style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "#C9BFA5", padding: 8, margin: -8, display: "flex" }}
+      style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "var(--faint)", padding: 8, margin: -8, display: "flex" }}
     >
       {done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
     </button>
@@ -777,9 +830,9 @@ export default function WGPlan() {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "#F1ECE0",
+      background: "var(--bg)",
       fontFamily: "'Work Sans', sans-serif",
-      color: "#20241F",
+      color: "var(--text)",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
@@ -878,19 +931,24 @@ export default function WGPlan() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Package size={22} color="#C68B2C" strokeWidth={2.5} />
-            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "#6B7A6D", fontWeight: 600 }}>
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--muted)", fontWeight: 600 }}>
               WG-Plan
             </span>
           </div>
-          {isAdmin ? (
-            <button onClick={handleLogout} aria-label="Abmelden" title="Als Admin abmelden" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "6px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#6B7A6D" }}>
-              <LogOut size={14} /> Admin
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setDark(v => !v)} aria-label={dark ? "Hellen Modus" : "Dunklen Modus"} title={dark ? "Heller Modus" : "Dunkler Modus"} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 999, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", color: "var(--muted)" }}>
+              {dark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
-          ) : (
-            <button onClick={() => setShowLogin(v => !v)} aria-label="Admin-Login" title="Admin-Login" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", color: "#6B7A6D" }}>
-              <Lock size={14} />
-            </button>
-          )}
+            {isAdmin ? (
+              <button onClick={handleLogout} aria-label="Abmelden" title="Als Admin abmelden" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 999, padding: "6px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--muted)" }}>
+                <LogOut size={14} /> Admin
+              </button>
+            ) : (
+              <button onClick={() => setShowLogin(v => !v)} aria-label="Admin-Login" title="Admin-Login" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 999, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", color: "var(--muted)" }}>
+                <Lock size={14} />
+              </button>
+            )}
+          </div>
         </div>
         <h1 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: "clamp(28px, 6vw, 42px)", margin: "6px 0 24px", lineHeight: 1.05 }}>
           Wer macht was?
@@ -899,15 +957,15 @@ export default function WGPlan() {
         {showInstallButton && (
           <div style={{ marginBottom: 24 }}>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={handleInstall} className="stamp-btn" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#C68B2C", color: "#20241F", border: "none", borderRadius: 10, padding: "13px 16px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
+              <button onClick={handleInstall} className="stamp-btn" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "#C68B2C", color: "var(--text)", border: "none", borderRadius: 10, padding: "13px 16px", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>
                 <Download size={18} /> Als App installieren
               </button>
-              <button onClick={dismissInstall} aria-label="Ausblenden" title="Ausblenden" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "0 12px", cursor: "pointer", color: "#8A8270", display: "flex", alignItems: "center" }}>
+              <button onClick={dismissInstall} aria-label="Ausblenden" title="Ausblenden" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 10, padding: "0 12px", cursor: "pointer", color: "var(--muted2)", display: "flex", alignItems: "center" }}>
                 <X size={16} />
               </button>
             </div>
             {showInstallHint && (
-              <div style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "12px 14px", marginTop: 8, fontSize: 13, color: "#6B7A6D", lineHeight: 1.55 }}>
+              <div style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "12px 14px", marginTop: 8, fontSize: 13, color: "var(--muted)", lineHeight: 1.55 }}>
                 {isIos ? (
                   <>Tippe unten in <b>Safari</b> auf das <b>Teilen-Symbol</b> (Quadrat mit Pfeil nach oben) und dann auf <b>„Zum Home-Bildschirm"</b>.</>
                 ) : (
@@ -919,7 +977,7 @@ export default function WGPlan() {
         )}
 
         {!isAdmin && showLogin && (
-          <div style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, padding: 16, marginBottom: 24, display: "grid", gap: 8 }}>
+          <div style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 12, padding: 16, marginBottom: 24, display: "grid", gap: 8 }}>
             <input
               value={loginEmail}
               onChange={(e) => setLoginEmail(e.target.value)}
@@ -935,7 +993,7 @@ export default function WGPlan() {
               type="password"
               style={inputStyle}
             />
-            <button onClick={handleLogin} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "10px 16px", cursor: "pointer", fontWeight: 600 }}>
+            <button onClick={handleLogin} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "10px 16px", cursor: "pointer", fontWeight: 600 }}>
               Anmelden
             </button>
             {authError && <p style={{ color: "#A5453B", fontSize: 13, margin: 0 }}>{authError}</p>}
@@ -943,7 +1001,7 @@ export default function WGPlan() {
         )}
 
         {/* Tab-Navigation */}
-        <div style={{ display: "flex", gap: 4, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 14, padding: 4, marginBottom: 24 }}>
+        <div style={{ display: "flex", gap: 4, background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 14, padding: 4, marginBottom: 24 }}>
           {TABS.map(t => {
             const TabIcon = t.icon;
             const active = activeTab === t.key;
@@ -953,7 +1011,7 @@ export default function WGPlan() {
                 onClick={() => setActiveTab(t.key)}
                 style={{
                   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                  background: active ? "#20241F" : "none", color: active ? "#F1ECE0" : "#6B7A6D",
+                  background: active ? "var(--panel)" : "none", color: active ? "var(--on-dark)" : "var(--muted)",
                   border: "none", borderRadius: 10, padding: "10px 6px", cursor: "pointer",
                   fontWeight: 600, fontSize: 13, fontFamily: "'Work Sans', sans-serif",
                 }}
@@ -967,30 +1025,30 @@ export default function WGPlan() {
         {/* ===================== PUTZPLAN (weekly) ===================== */}
         {activeTab === "cleaning" && (
           <>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#20241F", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
-              <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--panel)", borderRadius: 14, padding: "14px 16px", marginBottom: 8 }}>
+              <button onClick={() => setWeekOffset(o => o - 1)} aria-label="Vorherige Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "var(--on-dark)" }}>
                 <ChevronLeft size={20} />
               </button>
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "#F1ECE0" }}>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 16, color: "var(--on-dark)" }}>
                 {weekLabel}
               </span>
-              <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "#F1ECE0" }}>
+              <button onClick={() => setWeekOffset(o => o + 1)} aria-label="Nächste Woche" className="nav-arrow" style={{ background: "none", border: "none", cursor: "pointer", padding: 6, color: "var(--on-dark)" }}>
                 <ChevronRight size={20} />
               </button>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               {weekOffset !== 0 ? (
-                <button onClick={() => setWeekOffset(0)} style={{ background: "none", border: "none", color: "#6B7A6D", fontSize: 13, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
+                <button onClick={() => setWeekOffset(0)} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 13, cursor: "pointer", textDecoration: "underline", padding: 0 }}>
                   zurück zur aktuellen Woche
                 </button>
               ) : <span />}
-              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneCleaningCount === presentPeople.length ? "#5A7A5C" : "#8A8270" }}>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: doneCleaningCount === presentPeople.length ? "#5A7A5C" : "var(--muted2)" }}>
                 {doneCleaningCount}/{presentPeople.length} erledigt
               </span>
             </div>
 
             {awayList.length > 0 && (
-              <p style={{ fontSize: 12, color: "#8A8270", margin: "0 0 12px", fontStyle: "italic" }}>
+              <p style={{ fontSize: 12, color: "var(--muted2)", margin: "0 0 12px", fontStyle: "italic" }}>
                 Gerade nicht da: {awayList.join(", ")}{twoPersonMode ? " · 2-Personen-Modus: Bad-Person macht auch den Flur" : ""}
               </p>
             )}
@@ -1008,7 +1066,7 @@ export default function WGPlan() {
                 return (
                   <div key={i} style={{ ...cardBase, opacity: done ? 0.55 : 1, alignItems: hasExtra ? "flex-start" : "center" }}>
                     <div style={{ display: "flex", alignItems: hasExtra ? "flex-start" : "center", gap: 12, minWidth: 0 }}>
-                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0, marginTop: hasExtra ? 2 : 0 }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--faint)", fontWeight: 600, flexShrink: 0, marginTop: hasExtra ? 2 : 0 }}>
                         {String(i + 1).padStart(2, "0")}
                       </span>
                       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1033,10 +1091,10 @@ export default function WGPlan() {
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
               {rooms.map((room, i) => (
-                <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 999, padding: isAdmin ? "6px 10px 6px 14px" : "6px 14px", fontSize: 13 }}>
+                <span key={i} style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 999, padding: isAdmin ? "6px 10px 6px 14px" : "6px 14px", fontSize: 13 }}>
                   {room}
                   {isAdmin && (
-                    <button onClick={() => removeRoom(i)} aria-label={`${room} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#8A8270", padding: 0, display: "flex" }}>
+                    <button onClick={() => removeRoom(i)} aria-label={`${room} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted2)", padding: 0, display: "flex" }}>
                       <X size={13} />
                     </button>
                   )}
@@ -1052,7 +1110,7 @@ export default function WGPlan() {
                   placeholder="Neuer Raum (z.B. Balkon)"
                   style={inputStyle}
                 />
-                <button onClick={addRoom} className="stamp-btn" style={{ background: "#3E5C76", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                <button onClick={addRoom} className="stamp-btn" style={{ background: "#3E5C76", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
                   <Plus size={18} />
                 </button>
               </div>
@@ -1071,10 +1129,10 @@ export default function WGPlan() {
                         key={i}
                         onClick={() => togglePresence(p)}
                         style={{
-                          border: "1.5px solid #DDD6C4", borderRadius: 999, padding: "8px 14px", cursor: "pointer",
+                          border: "1.5px solid var(--border)", borderRadius: 999, padding: "8px 14px", cursor: "pointer",
                           fontSize: 13, fontWeight: 600,
-                          background: isAway ? "#FFFFFF" : "#5A7A5C",
-                          color: isAway ? "#9A9280" : "#FFFDF8",
+                          background: isAway ? "var(--surface)" : "#5A7A5C",
+                          color: isAway ? "var(--muted2)" : "#FFFDF8",
                           textDecoration: isAway ? "line-through" : "none",
                         }}
                       >
@@ -1083,17 +1141,17 @@ export default function WGPlan() {
                     );
                   })}
                 </div>
-                <p style={{ fontSize: 12, color: "#9A9280", margin: "8px 0 0", lineHeight: 1.5 }}>
+                <p style={{ fontSize: 12, color: "var(--muted2)", margin: "8px 0 0", lineHeight: 1.5 }}>
                   Grün = anwesend. Sind nur 2 anwesend, macht die Bad-Person automatisch auch den Flur.
                 </p>
               </div>
             )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-              <button onClick={exportCleaningWeek} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={exportCleaningWeek} className="stamp-btn" style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
                 <CalendarPlus size={15} /> Diese Woche in Kalender
               </button>
-              <button onClick={() => exportCleaningRange(12)} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => exportCleaningRange(12)} className="stamp-btn" style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
                 <CalendarPlus size={15} /> Nächste 12 Wochen
               </button>
             </div>
@@ -1104,9 +1162,9 @@ export default function WGPlan() {
             {showCleaningHistory && (
               <div style={{ display: "grid", gap: 8, marginBottom: 40 }}>
                 {cleaningHistory.map(h => (
-                  <div key={h.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "8px 14px", fontSize: 13 }}>
+                  <div key={h.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "8px 14px", fontSize: 13 }}>
                     <span>{h.label}</span>
-                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: h.done === h.total ? "#5A7A5C" : "#8A8270" }}>{h.done}/{h.total} erledigt</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: h.done === h.total ? "#5A7A5C" : "var(--muted2)" }}>{h.done}/{h.total} erledigt</span>
                   </div>
                 ))}
               </div>
@@ -1117,9 +1175,9 @@ export default function WGPlan() {
         {/* ===================== EINKAUF (bedarfsgesteuert) ===================== */}
         {activeTab === "supply" && (
           <>
-            <div style={{ display: "flex", gap: 10, background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 10, background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
               <Lightbulb size={18} color="#C68B2C" style={{ flexShrink: 0, marginTop: 1 }} />
-              <p style={{ fontSize: 13, color: "#6B7A6D", margin: 0, lineHeight: 1.5 }}>
+              <p style={{ fontSize: 13, color: "var(--muted)", margin: 0, lineHeight: 1.5 }}>
                 Jedes Produkt rotiert <b>einzeln</b> — reihum unter den Mitbewohner, die es nutzen.
                 Wer als Nächstes dran ist, wechselt erst beim tatsächlichen Kauf. Meldet einfach an,
                 was knapp oder leer ist.
@@ -1139,13 +1197,13 @@ export default function WGPlan() {
             {neededByBuyer.length > 0 ? (
               <div style={{ display: "grid", gap: 14, marginBottom: 28 }}>
                 {neededByBuyer.map((group) => (
-                  <div key={group.buyer || "—"} style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 12, overflow: "hidden" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#20241F", color: "#F1ECE0", padding: "10px 16px", fontWeight: 600, fontSize: 14 }}>
+                  <div key={group.buyer || "—"} style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--panel)", color: "var(--on-dark)", padding: "10px 16px", fontWeight: 600, fontSize: 14 }}>
                       🛒 <span style={{ fontFamily: "'Archivo Black', sans-serif" }}>{group.buyer || "—"}</span> kauft:
                     </div>
                     <div style={{ display: "grid" }}>
                       {group.items.map(({ item, i, level }, k) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderTop: k === 0 ? "none" : "1px solid #EEE8DA" }}>
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderTop: k === 0 ? "none" : "1px solid var(--divider)" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                             <span style={{ fontSize: 16, fontWeight: 500 }}>{item}</span>
                             <span style={{ background: level === "empty" ? "#A5453B" : "#C68B2C", color: "#FFFDF8", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999, whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -1160,7 +1218,7 @@ export default function WGPlan() {
                             }}
                             className="stamp-btn buy-btn"
                             title="Antippen, wenn gekauft"
-                            style={{ background: "#FFFFFF", color: "#5A7A5C", border: "1.5px solid #5A7A5C", borderRadius: 8, padding: "8px 13px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
+                            style={{ background: "var(--surface)", color: "#5A7A5C", border: "1.5px solid #5A7A5C", borderRadius: 8, padding: "8px 13px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}
                           >
                             <Circle size={16} /> gekauft
                           </button>
@@ -1171,14 +1229,14 @@ export default function WGPlan() {
                 ))}
               </div>
             ) : (
-              <p style={{ fontSize: 14, color: "#6B7A6D", marginBottom: 28 }}>
+              <p style={{ fontSize: 14, color: "var(--muted)", marginBottom: 28 }}>
                 Gerade muss nichts gekauft werden. 🎉
               </p>
             )}
 
             {/* Alle Vorräte + Bedarf melden */}
             <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: "0 0 4px" }}>Vorräte</h2>
-            <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
               Tippt an, was zur Neige geht — nur das landet oben auf der Einkaufsliste.
             </p>
             <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
@@ -1190,17 +1248,17 @@ export default function WGPlan() {
                   <div key={i} style={{ ...cardBase, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", rowGap: 10 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "#B9AF97", fontWeight: 600, flexShrink: 0 }}>
+                        <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--faint)", fontWeight: 600, flexShrink: 0 }}>
                           {String(i + 1).padStart(2, "0")}
                         </span>
                         <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
                           <span style={{ fontSize: 16, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item}</span>
                           {restricted && (
-                            <span style={{ fontSize: 12, color: "#8A8270" }}>nutzen: {users.join(", ")}</span>
+                            <span style={{ fontSize: 12, color: "var(--muted2)" }}>nutzen: {users.join(", ")}</span>
                           )}
                         </div>
                         {isAdmin && (
-                          <button onClick={() => removeItem(i)} aria-label={`${item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "#C9BFA5", padding: 2, flexShrink: 0 }}>
+                          <button onClick={() => removeItem(i)} aria-label={`${item} entfernen`} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--faint)", padding: 2, flexShrink: 0 }}>
                             <X size={14} />
                           </button>
                         )}
@@ -1214,9 +1272,9 @@ export default function WGPlan() {
                               onClick={() => setNeed(i, active ? null : lv.key)}
                               aria-pressed={active}
                               style={{
-                                border: `1.5px solid ${active ? lv.bg : "#DDD6C4"}`,
-                                background: active ? lv.bg : "#FFFFFF",
-                                color: active ? "#FFFDF8" : "#8A8270",
+                                border: `1.5px solid ${active ? lv.bg : "var(--border)"}`,
+                                background: active ? lv.bg : "var(--surface)",
+                                color: active ? "#FFFDF8" : "var(--muted2)",
                                 borderRadius: 999, padding: "8px 13px", cursor: "pointer",
                                 fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
                               }}
@@ -1228,8 +1286,8 @@ export default function WGPlan() {
                       </div>
                     </div>
                     {isAdmin && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderTop: "1px solid #EEE8DA", paddingTop: 10 }}>
-                        <span style={{ fontSize: 11, color: "#9A9280", fontWeight: 600, letterSpacing: "0.04em", marginRight: 2 }}>WER NUTZT DAS?</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderTop: "1px solid var(--divider)", paddingTop: 10 }}>
+                        <span style={{ fontSize: 11, color: "var(--muted2)", fontWeight: 600, letterSpacing: "0.04em", marginRight: 2 }}>WER NUTZT DAS?</span>
                         {people.map((p) => {
                           const on = users.includes(p);
                           return (
@@ -1238,9 +1296,9 @@ export default function WGPlan() {
                               onClick={() => toggleItemUser(item, p)}
                               aria-pressed={on}
                               style={{
-                                border: `1.5px solid ${on ? "#3E5C76" : "#DDD6C4"}`,
-                                background: on ? "#3E5C76" : "#FFFFFF",
-                                color: on ? "#FFFDF8" : "#9A9280",
+                                border: `1.5px solid ${on ? "#3E5C76" : "var(--border)"}`,
+                                background: on ? "#3E5C76" : "var(--surface)",
+                                color: on ? "#FFFDF8" : "var(--muted2)",
                                 borderRadius: 999, padding: "5px 11px", cursor: "pointer",
                                 fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
                               }}
@@ -1265,7 +1323,7 @@ export default function WGPlan() {
                   placeholder="Neuer Gegenstand (z.B. Küchenrolle)"
                   style={inputStyle}
                 />
-                <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
                   <Plus size={18} />
                 </button>
               </div>
@@ -1273,10 +1331,83 @@ export default function WGPlan() {
           </>
         )}
 
+        {/* ===================== AUFGABEN-BOARD ===================== */}
+        {activeTab === "tasks" && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <h2 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: 16, margin: 0 }}>Aufgaben</h2>
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, fontWeight: 600, color: openTaskCount === 0 ? "#5A7A5C" : "var(--muted2)" }}>
+                {openTaskCount} offen
+              </span>
+            </div>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
+              Einmalige To-dos neben der Rotation (z.B. „Stromrechnung zahlen", „Glühbirne Flur").
+              Jeder kann eintragen, abhaken und erledigte löschen.
+            </p>
+
+            {taskList.length > 0 ? (
+              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+                {taskList.map(([id, t]) => {
+                  const done = !!t.done;
+                  return (
+                    <div key={id} style={{ ...cardBase, opacity: done ? 0.55 : 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                        <button
+                          onClick={(e) => { if (!done) spawnConfettiBurst(e.clientX, e.clientY); toggleTask(id, done); }}
+                          aria-label={done ? "als offen markieren" : "als erledigt markieren"}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: done ? "#5A7A5C" : "var(--faint)", padding: 4, margin: -4, display: "flex", flexShrink: 0 }}
+                        >
+                          {done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
+                        </button>
+                        <span style={{ fontSize: 15, fontWeight: 500, textDecoration: done ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis" }}>{t.text}</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                        {t.assignee && (
+                          <span style={{ background: "#3E5C76", color: "#FFFDF8", fontSize: 12, fontWeight: 600, padding: "5px 11px", borderRadius: 999, whiteSpace: "nowrap" }}>
+                            {t.assignee}
+                          </span>
+                        )}
+                        <button onClick={() => removeTask(id)} aria-label="Aufgabe löschen" title="Löschen" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "var(--muted2)", display: "flex" }}>
+                          <X size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p style={{ fontSize: 13, color: "var(--muted2)", marginBottom: 16 }}>Noch keine Aufgaben.</p>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 40 }}>
+              <input
+                value={taskText}
+                onChange={(e) => setTaskText(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addTask()}
+                placeholder="Neue Aufgabe..."
+                style={{ ...inputStyle, minWidth: 160 }}
+              />
+              <select
+                value={taskAssignee}
+                onChange={(e) => setTaskAssignee(e.target.value)}
+                style={{ ...inputStyle, flex: "0 0 auto", minWidth: 120, cursor: "pointer" }}
+              >
+                <option value="">— jeder</option>
+                {people.map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+              <button onClick={addTask} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                <Plus size={18} />
+              </button>
+            </div>
+          </>
+        )}
+
         {/* ===================== WG-TREFFEN ===================== */}
         {activeTab === "meeting" && (
           <>
-            <div style={{ background: "#20241F", borderRadius: 14, padding: 18, marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <div style={{ background: "var(--panel)", borderRadius: 14, padding: 18, marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 140 }}>
                 <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9AA69C", marginBottom: 6 }}>
                   Datum
@@ -1286,10 +1417,10 @@ export default function WGPlan() {
                     type="date"
                     value={meetingInfo.date}
                     onChange={(e) => updateMeetingField("date", e.target.value)}
-                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "var(--on-dark)", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
                   />
                 ) : (
-                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0" }}>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--on-dark)" }}>
                     {meetingInfo.date
                       ? `${WEEKDAY_FULL[new Date(meetingInfo.date + "T00:00:00").getDay()]}, ${fmtDDMMYYYY(new Date(meetingInfo.date + "T00:00:00"))}`
                       : "Noch kein Termin"}
@@ -1304,10 +1435,10 @@ export default function WGPlan() {
                   <input
                     value={meetingInfo.time}
                     onChange={(e) => updateMeetingField("time", e.target.value)}
-                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "var(--on-dark)", fontSize: 16, fontFamily: "'IBM Plex Mono', monospace" }}
                   />
                 ) : (
-                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0", fontFamily: "'IBM Plex Mono', monospace" }}>{meetingInfo.time} Uhr</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--on-dark)", fontFamily: "'IBM Plex Mono', monospace" }}>{meetingInfo.time} Uhr</div>
                 )}
               </div>
               <div style={{ flex: 1, minWidth: 140 }}>
@@ -1318,20 +1449,20 @@ export default function WGPlan() {
                   <input
                     value={meetingInfo.place}
                     onChange={(e) => updateMeetingField("place", e.target.value)}
-                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "#F1ECE0", fontSize: 16 }}
+                    style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1.5px solid #454C40", background: "#2B2F28", color: "var(--on-dark)", fontSize: 16 }}
                   />
                 ) : (
-                  <div style={{ fontSize: 18, fontWeight: 600, color: "#F1ECE0" }}>{meetingInfo.place}</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--on-dark)" }}>{meetingInfo.place}</div>
                 )}
               </div>
             </div>
 
             {meetingInfo.date ? (
-              <button onClick={exportMeeting} className="stamp-btn" style={{ background: "#FFFFFF", border: "1.5px solid #DDD6C4", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 24 }}>
+              <button onClick={exportMeeting} className="stamp-btn" style={{ background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 24 }}>
                 <CalendarPlus size={15} /> Termin in Kalender
               </button>
             ) : (
-              <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 24 }}>
+              <p style={{ fontSize: 13, color: "var(--muted2)", marginBottom: 24 }}>
                 Sobald ein Datum eingetragen ist, kann jeder den Termin in seinen Kalender exportieren.
               </p>
             )}
@@ -1344,7 +1475,7 @@ export default function WGPlan() {
                   <div key={id} style={cardBase}>
                     <span style={{ fontSize: 15 }}>{n.text}</span>
                     {isAdmin && (
-                      <button onClick={() => dismissMeetingNote(id)} aria-label="Anmerkung löschen" title="Löschen" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#8A8270", display: "flex", flexShrink: 0 }}>
+                      <button onClick={() => dismissMeetingNote(id)} aria-label="Anmerkung löschen" title="Löschen" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "var(--muted2)", display: "flex", flexShrink: 0 }}>
                         <X size={15} />
                       </button>
                     )}
@@ -1352,10 +1483,10 @@ export default function WGPlan() {
                 ))}
               </div>
             ) : (
-              <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 16 }}>Noch keine Anmerkungen.</p>
+              <p style={{ fontSize: 13, color: "var(--muted2)", marginBottom: 16 }}>Noch keine Anmerkungen.</p>
             )}
 
-            <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+            <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
               Hier kann jeder notieren, was zur WG-Gruppe mitgebracht werden muss oder worüber sich
               bis dahin schon mal Gedanken gemacht werden soll.
             </p>
@@ -1367,7 +1498,7 @@ export default function WGPlan() {
                 placeholder="Notizen..."
                 style={{ ...inputStyle, minWidth: 160 }}
               />
-              <button onClick={addMeetingNote} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+              <button onClick={addMeetingNote} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
                 <Plus size={18} />
               </button>
             </div>
@@ -1386,7 +1517,7 @@ export default function WGPlan() {
               <div key={id} style={cardBase}>
                 <span style={{ fontSize: 15 }}>{s.text}</span>
                 {isAdmin && (
-                  <button onClick={() => dismissSuggestion(id)} aria-label="Vorschlag löschen" title="Löschen" style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#8A8270", display: "flex", flexShrink: 0 }}>
+                  <button onClick={() => dismissSuggestion(id)} aria-label="Vorschlag löschen" title="Löschen" style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "var(--muted2)", display: "flex", flexShrink: 0 }}>
                     <X size={15} />
                   </button>
                 )}
@@ -1394,10 +1525,10 @@ export default function WGPlan() {
             ))}
           </div>
         ) : (
-          <p style={{ fontSize: 13, color: "#9A9280", marginBottom: 16 }}>Noch keine Vorschläge.</p>
+          <p style={{ fontSize: 13, color: "var(--muted2)", marginBottom: 16 }}>Noch keine Vorschläge.</p>
         )}
 
-        <p style={{ fontSize: 13, color: "#6B7A6D", marginBottom: 12, lineHeight: 1.5 }}>
+        <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12, lineHeight: 1.5 }}>
           Hier könnt ihr Vorschläge, Ideen, Funktionswünsche oder sonst was reinschreiben —
           ich schau dann, ob ich das umsetzen/integrieren kann.
         </p>
@@ -1409,7 +1540,7 @@ export default function WGPlan() {
             placeholder="Dein Vorschlag..."
             style={{ ...inputStyle, minWidth: 160 }}
           />
-          <button onClick={addSuggestion} className="stamp-btn" style={{ background: "#34404A", color: "#F1ECE0", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+          <button onClick={addSuggestion} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
             <Plus size={18} />
           </button>
         </div>
@@ -1427,14 +1558,14 @@ export default function WGPlan() {
                     <input
                       value={p}
                       onChange={(e) => updatePerson(i, e.target.value)}
-                      style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1.5px solid #DDD6C4", background: "#FFFFFF", fontSize: 14 }}
+                      style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1.5px solid var(--border)", background: "var(--surface)", fontSize: 14 }}
                     />
-                    <button onClick={() => removePerson(i)} aria-label={`${p} entfernen`} style={{ background: "none", border: "1.5px solid #DDD6C4", borderRadius: 8, cursor: "pointer", color: "#8A8270", padding: "0 10px" }}>
+                    <button onClick={() => removePerson(i)} aria-label={`${p} entfernen`} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 8, cursor: "pointer", color: "var(--muted2)", padding: "0 10px" }}>
                       <X size={14} />
                     </button>
                   </div>
                 ))}
-                <button onClick={addPerson} style={{ background: "none", border: "1.5px dashed #B9AF97", borderRadius: 8, padding: "8px", cursor: "pointer", color: "#6B7A6D", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                <button onClick={addPerson} style={{ background: "none", border: "1.5px dashed var(--faint)", borderRadius: 8, padding: "8px", cursor: "pointer", color: "var(--muted)", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                   <Plus size={14} /> Person hinzufügen
                 </button>
               </div>
@@ -1448,7 +1579,7 @@ export default function WGPlan() {
           </p>
         )}
 
-        <p style={{ fontSize: 12, color: "#9A9280", marginTop: 20, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 12, color: "var(--muted2)", marginTop: 20, lineHeight: 1.6 }}>
           Die Liste wird geteilt gespeichert — öffnet jeder Mitbewohner diesen Link, sieht er denselben Stand.
           Putzplan rotiert wöchentlich (Fr–So) automatisch. Beim Einkauf meldet jeder, was zur Neige geht;
           gekauft wird nur, was gemeldet ist, und wer einkauft wechselt reihum. Über die Kalender-Buttons

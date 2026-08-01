@@ -78,6 +78,10 @@ Für die lokale Entwicklung braucht `src/firebase.js` eine gültige Firebase-Con
          ".read": true,
          ".write": true
        },
+       "wg-plan-tasks": {
+         ".read": true,
+         ".write": true
+       },
        "wg-plan-meeting": {
          "info": {
            ".read": true,
