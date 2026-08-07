@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
 import { getAuth } from "firebase/auth";
+import { getMessaging, isSupported } from "firebase/messaging";
 
 // Firebase Web-Config ist kein Geheimnis (siehe Firebase-Doku) — Zugriffsschutz
 // erfolgt über die Realtime Database Security Rules, nicht durch Geheimhaltung
@@ -18,3 +19,15 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 export const db = getDatabase(app);
 export const auth = getAuth(app);
+
+// Web-Push-Zertifikat ("VAPID-Key") aus Firebase → Projekteinstellungen → Cloud Messaging
+// → Web-Konfiguration. Öffentlich (kein Geheimnis), darf ins Repo.
+export const VAPID_KEY = "REPLACE_WITH_VAPID_KEY";
+
+// Messaging nur laden, wenn der Browser es unterstützt (z.B. nicht in älteren iOS-Safari-Tabs).
+export async function getMessagingIfSupported() {
+  try {
+    if (await isSupported()) return getMessaging(app);
+  } catch (e) {}
+  return null;
+}

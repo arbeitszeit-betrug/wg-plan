@@ -1,0 +1,23 @@
+name: Push-Erinnerungen
+
+on:
+  schedule:
+    # Freitag 07:00 UTC = 09:00 (Sommerzeit) bzw. 08:00 (Winterzeit) in Deutschland.
+    # GitHub-Cron läuft in UTC ohne Sommerzeit; Zeit bei Bedarf hier anpassen.
+    - cron: "0 7 * * 5"
+  workflow_dispatch: {} # Erlaubt manuelles Auslösen im "Actions"-Tab (zum Testen).
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: firebase-admin installieren
+        run: npm i firebase-admin@12 --no-save
+      - name: Erinnerungen senden
+        run: node scripts/send-reminders.mjs
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}

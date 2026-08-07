@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ref, onValue, set as dbSet, push, remove as dbRemove } from "firebase/database";
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
-import { db, auth } from "./firebase";
-import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History, Download, ListChecks, Moon, Sun } from "lucide-react";
+import { getToken, deleteToken, onMessage } from "firebase/messaging";
+import { db, auth, VAPID_KEY, getMessagingIfSupported } from "./firebase";
+import { Plus, X, ChevronLeft, ChevronRight, Package, Sparkles, CalendarPlus, Lock, LogOut, Lightbulb, CheckCircle2, Circle, Users, History, Download, ListChecks, Moon, Sun, Bell, BellOff } from "lucide-react";
 
 const DEFAULT_PEOPLE = ["Hannes", "Mareike", "Mirko"];
 const DEFAULT_ITEMS = ["Klopapier", "WC-Reiniger", "Spülmittel", "Müllbeutel"];
@@ -207,6 +208,14 @@ export default function WGPlan() {
   const [taskText, setTaskText] = useState("");
   const [taskAssignee, setTaskAssignee] = useState("");
 
+  // Push-Benachrichtigungen
+  const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
+  const [notifOn, setNotifOn] = useState(() => {
+    try { return !!localStorage.getItem("wgplan-push-key"); } catch { return false; }
+  });
+  const [notifBusy, setNotifBusy] = useState(false);
+  const [notifMsg, setNotifMsg] = useState("");
+
   // Dark Mode
   const [dark, setDark] = useState(() => {
     try {
@@ -357,6 +366,21 @@ export default function WGPlan() {
     return () => unsubscribe();
   }, []);
 
+  // Push: eingehende Nachrichten anzeigen, während die App offen ist (Vordergrund).
+  useEffect(() => {
+    let unsub;
+    getMessagingIfSupported().then((m) => {
+      if (!m) return;
+      unsub = onMessage(m, (payload) => {
+        const n = payload.notification || {};
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try { new Notification(n.title || "WG-Plan", { body: n.body || "", icon: "/wg-plan/icon-192.png" }); } catch {}
+        }
+      });
+    });
+    return () => { if (unsub) unsub(); };
+  }, []);
+
   // Dark Mode auf <html> anwenden (setzt die CSS-Variablen um) + Statusleisten-Farbe.
   useEffect(() => {
     try { localStorage.setItem("wgplan-theme", dark ? "dark" : "light"); } catch {}
@@ -454,6 +478,63 @@ export default function WGPlan() {
   const dismissInstall = () => {
     setInstallDismissed(true);
     try { localStorage.setItem("wgplan-install-dismissed", "1"); } catch {}
+  };
+
+  const enableNotifications = async () => {
+    setNotifMsg("");
+    const isIosNow = /iphone|ipad|ipod/i.test(navigator.userAgent || "");
+    const standalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+    const messaging = await getMessagingIfSupported();
+    if (!messaging || typeof Notification === "undefined") {
+      setNotifMsg(isIosNow && !standalone
+        ? "Auf dem iPhone zuerst die App zum Home-Bildschirm hinzufügen — Benachrichtigungen gehen nur in der installierten App (iOS 16.4+)."
+        : "Dein Browser unterstützt keine Push-Benachrichtigungen.");
+      return;
+    }
+    if (!VAPID_KEY || VAPID_KEY.startsWith("REPLACE")) {
+      setNotifMsg("Push ist noch nicht ganz eingerichtet (VAPID-Key fehlt).");
+      return;
+    }
+    setNotifBusy(true);
+    try {
+      const permission = await Notification.requestPermission();
+      setNotifPerm(permission);
+      if (permission !== "granted") {
+        setNotifMsg("Benachrichtigungen wurden nicht erlaubt.");
+        setNotifBusy(false);
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+      if (!token) {
+        setNotifMsg("Konnte keinen Push-Token holen — bitte nochmal versuchen.");
+        setNotifBusy(false);
+        return;
+      }
+      const key = token.replace(/[.#$/\[\]]/g, "_");
+      await dbSet(ref(db, `wg-plan-push/tokens/${key}`), { token, createdAt: Date.now() });
+      try { localStorage.setItem("wgplan-push-key", key); } catch {}
+      setNotifOn(true);
+      setNotifMsg("Benachrichtigungen aktiviert ✓");
+    } catch (e) {
+      setNotifMsg("Aktivierung fehlgeschlagen — bitte nochmal versuchen.");
+    }
+    setNotifBusy(false);
+  };
+
+  const disableNotifications = async () => {
+    setNotifBusy(true);
+    try {
+      let key = null;
+      try { key = localStorage.getItem("wgplan-push-key"); } catch {}
+      if (key) await dbRemove(ref(db, `wg-plan-push/tokens/${key}`));
+      const messaging = await getMessagingIfSupported();
+      if (messaging) { try { await deleteToken(messaging); } catch {} }
+      try { localStorage.removeItem("wgplan-push-key"); } catch {}
+      setNotifOn(false);
+      setNotifMsg("Benachrichtigungen aus.");
+    } catch (e) {}
+    setNotifBusy(false);
   };
 
   const togglePresence = (name) => {
@@ -936,6 +1017,9 @@ export default function WGPlan() {
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={notifOn ? disableNotifications : enableNotifications} disabled={notifBusy} aria-label="Benachrichtigungen" title={notifOn ? "Benachrichtigungen aus" : "Benachrichtigungen an"} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 999, padding: "6px 10px", cursor: notifBusy ? "wait" : "pointer", display: "flex", alignItems: "center", color: notifOn ? "#C68B2C" : "var(--muted)" }}>
+              {notifOn ? <Bell size={14} /> : <BellOff size={14} />}
+            </button>
             <button onClick={() => setDark(v => !v)} aria-label={dark ? "Hellen Modus" : "Dunklen Modus"} title={dark ? "Heller Modus" : "Dunkler Modus"} style={{ background: "none", border: "1.5px solid var(--border)", borderRadius: 999, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", color: "var(--muted)" }}>
               {dark ? <Sun size={14} /> : <Moon size={14} />}
             </button>
@@ -953,6 +1037,15 @@ export default function WGPlan() {
         <h1 style={{ fontFamily: "'Archivo Black', sans-serif", fontSize: "clamp(28px, 6vw, 42px)", margin: "6px 0 24px", lineHeight: 1.05 }}>
           Wer macht was?
         </h1>
+
+        {notifMsg && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, background: "var(--surface)", border: "1.5px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 24, fontSize: 13, color: "var(--muted)", lineHeight: 1.5 }}>
+            <span>{notifMsg}</span>
+            <button onClick={() => setNotifMsg("")} aria-label="Ausblenden" style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted2)", padding: 0, display: "flex", flexShrink: 0 }}>
+              <X size={15} />
+            </button>
+          </div>
+        )}
 
         {showInstallButton && (
           <div style={{ marginBottom: 24 }}>
