@@ -573,9 +573,9 @@ export default function WGPlan() {
       assignee: taskAssignee || null,
       done: false,
       createdAt: Date.now(),
-    });
-    setTaskText("");
-    setTaskAssignee("");
+    })
+      .then(() => { setTaskText(""); setTaskAssignee(""); setSaveError(false); })
+      .catch(() => setSaveError(true));
   };
   const toggleTask = (id, done) => dbSet(ref(db, `${TASKS_PATH}/${id}/done`), !done);
   const removeTask = (id) => dbRemove(ref(db, `${TASKS_PATH}/${id}`));
