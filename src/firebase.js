@@ -22,7 +22,7 @@ export const auth = getAuth(app);
 
 // Web-Push-Zertifikat ("VAPID-Key") aus Firebase → Projekteinstellungen → Cloud Messaging
 // → Web-Konfiguration. Öffentlich (kein Geheimnis), darf ins Repo.
-export const VAPID_KEY = "REPLACE_WITH_VAPID_KEY";
+export const VAPID_KEY = "BFmEsRa2AKVFZRyzhsG8CYtyKOQSmu8FAEFhb1WtL0KZTQBCJ0I3qGP5C1Q9H-GcckLThvyqvwoRypDAardDLvc";
 
 // Messaging nur laden, wenn der Browser es unterstützt (z.B. nicht in älteren iOS-Safari-Tabs).
 export async function getMessagingIfSupported() {
