@@ -783,11 +783,16 @@ export default function WGPlan() {
     };
   });
 
+  // Neue Gegenstände darf jeder anlegen: es wird nur die items-Liste geschrieben
+  // (Pfad wg-plan-config/items ist für alle freigegeben), nicht die ganze Config.
   const addItem = () => {
     const v = newItem.trim();
     if (!v) return;
-    save({ ...config, items: [...items, v] });
-    setNewItem("");
+    const nextItems = [...items, v];
+    setConfig((c) => ({ ...c, items: nextItems }));
+    dbSet(ref(db, `${CONFIG_PATH}/items`), nextItems)
+      .then(() => { setNewItem(""); setSaveError(false); })
+      .catch(() => setSaveError(true));
   };
   const removeItem = (idx) => {
     const name = items[idx];
@@ -1409,20 +1414,18 @@ export default function WGPlan() {
               })}
             </div>
 
-            {isAdmin && (
-              <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-                <input
-                  value={newItem}
-                  onChange={(e) => setNewItem(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addItem()}
-                  placeholder="Neuer Gegenstand (z.B. Küchenrolle)"
-                  style={inputStyle}
-                />
-                <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
-                  <Plus size={18} />
-                </button>
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+              <input
+                value={newItem}
+                onChange={(e) => setNewItem(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addItem()}
+                placeholder="Neuer Gegenstand (z.B. Küchenrolle)"
+                style={inputStyle}
+              />
+              <button onClick={addItem} className="stamp-btn" style={{ background: "#34404A", color: "var(--on-dark)", border: "none", borderRadius: 10, padding: "0 16px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                <Plus size={18} />
+              </button>
+            </div>
           </>
         )}
 

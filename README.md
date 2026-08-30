@@ -66,7 +66,8 @@ Für die lokale Entwicklung braucht `src/firebase.js` eine gültige Firebase-Con
      "rules": {
        "wg-plan-config": {
          ".read": true,
-         ".write": "auth != null && auth.token.email === 'hannes.kornagel98@gmail.com'"
+         ".write": "auth != null && auth.token.email === 'hannes.kornagel98@gmail.com'",
+         "items": { ".write": true }
        },
        "wg-plan-suggestions": {
          ".read": true,
