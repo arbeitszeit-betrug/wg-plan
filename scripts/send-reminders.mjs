@@ -6,7 +6,8 @@ import admin from "firebase-admin";
 
 const DATABASE_URL = "https://wg-plan-a8a4d-default-rtdb.europe-west1.firebasedatabase.app";
 const APP_URL = "https://arbeitszeit-betrug.github.io/wg-plan/";
-const MONTHLY_EXTRA_TASKS = { "Küche": "Ofen putzen", "Bad": "Handtücher/Lappen waschen" };
+const MONTHLY_EXTRA_TASKS = { "Küche": ["Ofen putzen", "Balkon putzen"], "Bad": ["Handtücher/Lappen waschen"] };
+const extrasForRoom = (room) => MONTHLY_EXTRA_TASKS[room] || [];
 const EXTRA_TASK_INTERVAL_WEEKS = 4;
 
 if (!process.env.FIREBASE_SA) {
@@ -84,7 +85,7 @@ async function main() {
     const badIdx = ((twoRot % 2) + 2) % 2;
     assignments = presentPeople.map((person, i) => {
       const rl = i === badIdx ? ["Bad", "Flur"] : ["Küche"];
-      const extra = isExtraWeek ? rl.map((r) => MONTHLY_EXTRA_TASKS[r]).filter(Boolean) : [];
+      const extra = isExtraWeek ? rl.flatMap((r) => extrasForRoom(r)) : [];
       return { person, rooms: rl, extra };
     });
   } else {
@@ -92,7 +93,7 @@ async function main() {
     assignments = presentPeople.map((person, p) => {
       const roomIdx = ((((p - effWeekIndex) % n) + n) % n);
       const room = rooms[roomIdx];
-      const extra = isExtraWeek && MONTHLY_EXTRA_TASKS[room] ? [MONTHLY_EXTRA_TASKS[room]] : [];
+      const extra = isExtraWeek ? extrasForRoom(room) : [];
       return { person, rooms: [room], extra };
     });
   }

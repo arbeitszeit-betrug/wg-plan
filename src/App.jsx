@@ -17,11 +17,13 @@ const DEFAULT_MEETING_INFO = { date: "", time: "18:00", place: "in der WG" };
 const WEEKDAY_FULL = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
 const HISTORY_LENGTH = 6;
 
-// Zusatzaufgaben, die nur 1x im Monat an die Person gehen, die gerade den jeweiligen Raum hat
+// Zusatzaufgaben, die nur 1x im Monat an die Person gehen, die gerade den jeweiligen Raum hat.
+// Pro Raum können es mehrere sein (z.B. Küche = Ofen + Balkon).
 const MONTHLY_EXTRA_TASKS = {
-  "Küche": "Ofen putzen",
-  "Bad": "Handtücher/Lappen waschen",
+  "Küche": ["Ofen putzen", "Balkon putzen"],
+  "Bad": ["Handtücher/Lappen waschen"],
 };
+const extrasForRoom = (room) => MONTHLY_EXTRA_TASKS[room] || [];
 const EXTRA_TASK_INTERVAL_WEEKS = 4;
 
 // Bedarf-Stufen für den Einkauf (null = genug da). Reihenfolge = Anzeige-Reihenfolge.
@@ -754,7 +756,7 @@ export default function WGPlan() {
     const badPersonIdx = ((twoRot % 2) + 2) % 2; // wer diese Woche Bad + Flur macht
     cleaningAssignments = presentPeople.map((person, i) => {
       const roomList = i === badPersonIdx ? ["Bad", "Flur"] : ["Küche"];
-      const extraTasks = isExtraTaskWeek ? roomList.map((r) => MONTHLY_EXTRA_TASKS[r]).filter(Boolean) : [];
+      const extraTasks = isExtraTaskWeek ? roomList.flatMap((r) => extrasForRoom(r)) : [];
       return { person, rooms: roomList, extraTasks };
     });
   } else {
@@ -762,7 +764,7 @@ export default function WGPlan() {
     cleaningAssignments = presentPeople.map((person, p) => {
       const roomIdx = ((((p - effWeekIndex) % n) + n) % n);
       const room = rooms[roomIdx];
-      const extraTasks = isExtraTaskWeek && MONTHLY_EXTRA_TASKS[room] ? [MONTHLY_EXTRA_TASKS[room]] : [];
+      const extraTasks = isExtraTaskWeek ? extrasForRoom(room) : [];
       return { person, rooms: [room], extraTasks };
     });
   }
@@ -837,15 +839,15 @@ export default function WGPlan() {
       const assigns = people.map((person, p) => {
         const roomIdx = ((((p - wi) % n) + n) % n);
         const room = rooms[roomIdx];
-        const extraTask = weekIsExtra ? MONTHLY_EXTRA_TASKS[room] : undefined;
-        return { person, room, extraTask };
+        const extraTasks = weekIsExtra ? extrasForRoom(room) : [];
+        return { person, room, extraTasks };
       });
       events.push({
         uid: `putz-${icsDate(wStart)}@wg-plan`,
         startDate: wStart,
         endDateExclusive: wEnd,
         summary: `Wochenputz: ${assigns.map(a => `${a.person}–${a.room}`).join(", ")}`,
-        description: assigns.map(a => `${a.person}: ${a.room}${a.extraTask ? ` (+ ${a.extraTask})` : ""}`).join("\n"),
+        description: assigns.map(a => `${a.person}: ${a.room}${a.extraTasks.length ? ` (+ ${a.extraTasks.join(", ")})` : ""}`).join("\n"),
       });
     }
     downloadICS("wochenputz-12wochen.ics", events);
